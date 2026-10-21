@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 import hmac
+import hashlib
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -41,11 +43,29 @@ st.set_page_config(
     layout="wide",
 )
 
-database.initialize_database()
+database.CLOUD_URL = os.environ.get("SQLITECLOUD_URL", "")
+if not database.CLOUD_URL:
+    try:
+        database.CLOUD_URL = st.secrets.get("SQLITECLOUD_URL", "")
+    except st.errors.StreamlitSecretNotFoundError:
+        pass
 
 
 @st.cache_resource
-def sync_catalog(source_path: str, modified_at: float) -> int:
+def initialize_storage(storage_key: str) -> None:
+    database.initialize_database()
+
+
+storage_key = hashlib.sha256((database.CLOUD_URL or str(database.DATABASE_PATH)).encode()).hexdigest()
+try:
+    initialize_storage(storage_key)
+except Exception:
+    st.error("Could not open the league database. Check the configured database connection and permissions.")
+    st.stop()
+
+
+@st.cache_resource
+def sync_catalog(source_path: str, modified_at: float, storage_key: str) -> int:
     # The modification time is part of the cache key, so edits to the source file
     # are imported the next time Streamlit reruns.
     del modified_at
@@ -68,7 +88,7 @@ def numeric_column_config(frame, formats: dict[str, str] | None = None) -> dict:
 
 
 @st.cache_resource
-def weekly_score_refresh() -> WeeklyScoreRefresh:
+def weekly_score_refresh(storage_key: str) -> WeeklyScoreRefresh:
     return WeeklyScoreRefresh()
 
 
@@ -88,7 +108,7 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         st.info("No active roster has been submitted for this team and week.")
         return
 
-    _, scheduled_games, warnings, refreshing = weekly_score_refresh().poll(team_id, week_start)
+    _, scheduled_games, warnings, refreshing = weekly_score_refresh(storage_key).poll(team_id, week_start)
     if refreshing:
         st.caption("Updating scores and schedule in the background. Showing saved game logs until the next refresh.")
     render_score_warnings(warnings)
@@ -163,8 +183,8 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
 
 
 @st.cache_resource
-def overview_refresh() -> OverviewRefresh:
-    return OverviewRefresh(weekly_score_refresh())
+def overview_refresh(storage_key: str) -> OverviewRefresh:
+    return OverviewRefresh(weekly_score_refresh(storage_key))
 
 
 @st.fragment(run_every="30s")
@@ -178,7 +198,7 @@ def render_overview(week_start: date, as_of: date) -> None:
     )
     st.caption("Scores refresh every 30 seconds while this page is open.")
 
-    warnings, refreshing = overview_refresh().poll(week_start)
+    warnings, refreshing = overview_refresh(storage_key).poll(week_start)
     if refreshing:
         st.caption("Updating NBA scores in the background. Showing saved scores until the next refresh.")
 
@@ -231,9 +251,23 @@ def render_overview(week_start: date, as_of: date) -> None:
 
     if st.session_state.get("overview_admin_unlocked", False):
         st.success("Admin controls are unlocked for this session.")
+        st.caption("League storage: SQLite Cloud" if database.CLOUD_URL else "League storage: local SQLite file")
+        with st.expander("Download league backup"):
+            st.caption("Save a copy of teams, rosters, lineups, and scores before migrating storage.")
+            if st.button("Prepare database backup", key="prepare_league_backup"):
+                st.session_state["league_backup"] = database.export_database_backup()
+            if "league_backup" in st.session_state:
+                st.download_button(
+                    "Download database backup",
+                    data=st.session_state["league_backup"],
+                    file_name="nba_league_backup.db",
+                    mime="application/vnd.sqlite3",
+                    on_click="ignore",
+                )
         if st.button("Lock admin controls", key="lock_overview_admin"):
             st.session_state["overview_admin_unlocked"] = False
             st.session_state["overview_admin_auth_result"] = None
+            st.session_state.pop("league_backup", None)
             st.rerun()
     elif st.session_state.get("overview_admin_auth_result") == "invalid":
         st.error("Incorrect password.")
@@ -244,7 +278,7 @@ catalog_error = None
 catalog_count = 0
 if player_file.exists():
     try:
-        catalog_count = sync_catalog(str(player_file), player_file.stat().st_mtime)
+        catalog_count = sync_catalog(str(player_file), player_file.stat().st_mtime, storage_key)
     except Exception as exc:
         catalog_error = str(exc)
 else:

@@ -2,3 +2,4 @@ streamlit
 nba_api
 pandas
 requests
+sqlitecloud>=0.0.84,<1

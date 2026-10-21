@@ -1,6 +1,8 @@
 """SQLite storage for league teams, NBA players, rosters, and box scores."""
 
 import os
+import hashlib
+import json
 import re
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -12,6 +14,7 @@ import unicodedata
 DATABASE_PATH = Path(
     os.environ.get("NBA_FANTASY_DB", Path(__file__).with_name("nba_fantasy.db"))
 )
+CLOUD_URL = os.environ.get("SQLITECLOUD_URL", "")
 
 
 class _Connection(sqlite3.Connection):
@@ -23,15 +26,34 @@ class _Connection(sqlite3.Connection):
 
 
 def connect() -> sqlite3.Connection:
+    if CLOUD_URL:
+        from cloud_database import connect_cloud
+        return connect_cloud(CLOUD_URL)
     connection = sqlite3.connect(DATABASE_PATH, timeout=10, factory=_Connection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
+def export_database_backup() -> bytes:
+    """Return a consistent SQLite backup, including committed live writes."""
+    snapshot = sqlite3.connect(":memory:")
+    try:
+        with connect() as source:
+            source.backup(snapshot)
+        return snapshot.serialize()
+    finally:
+        snapshot.close()
+
+
 def _create_tables(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
+        CREATE TABLE IF NOT EXISTS app_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS fantasy_teams (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
@@ -191,6 +213,15 @@ def _create_tables(connection: sqlite3.Connection) -> None:
 
 def initialize_database() -> None:
     """Create the schema and preserve data from the initial prototype schema."""
+    if CLOUD_URL:
+        with connect() as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "players" in tables and "player_id" not in {
+                row[1] for row in connection.execute("PRAGMA table_info(players)")
+            }:
+                raise RuntimeError("This cloud database uses the old prototype schema. Migrate a local backup before importing it.")
+            _create_tables(connection)
+        return
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     # Disable FK checks only during the one-time table migration from the prototype.
     raw = sqlite3.connect(DATABASE_PATH, timeout=10)
@@ -343,68 +374,52 @@ def read_player_positions_file(path: str | Path) -> list[dict]:
 
 
 def sync_player_catalog(players: Iterable[dict]) -> int:
-    """Upsert the NBA player list from player_positions.txt; return catalog size."""
+    """Batch catalog updates and skip unchanged imports across deployments."""
     rows = list(players)
+    digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
     with connect() as connection:
-        connection.execute("UPDATE players SET is_active = 0")
+        saved = connection.execute(
+            "SELECT value FROM app_metadata WHERE key = 'player_catalog_digest'"
+        ).fetchone()
+        if saved and saved[0] == digest:
+            return connection.execute("SELECT COUNT(*) FROM players WHERE is_active = 1").fetchone()[0]
+        connection.execute("BEGIN IMMEDIATE")
+        existing_rows = [dict(row) for row in connection.execute("SELECT * FROM players").fetchall()]
+        next_id = max((row["player_id"] for row in existing_rows), default=0) + 1
+        updates = []
         for player in rows:
             existing = None
             if player["nba_player_id"] is not None:
-                existing = connection.execute(
-                    "SELECT player_id FROM players WHERE nba_player_id = ?",
-                    (player["nba_player_id"],),
-                ).fetchone()
+                existing = next((row for row in existing_rows if row["nba_player_id"] == player["nba_player_id"]), None)
             if existing is None:
-                existing = connection.execute(
-                    "SELECT player_id FROM players WHERE source_key = ?",
-                    (player["source_key"],),
-                ).fetchone()
-            # Preserve the same catalog row when a corrected name changes its
-            # source key. Team plus jersey is a useful fallback for those edits.
+                existing = next((row for row in existing_rows if row["source_key"] == player["source_key"]), None)
             if existing is None and player["jersey_number"]:
-                candidates = connection.execute(
-                    """SELECT player_id FROM players
-                       WHERE nba_team_name = ? AND jersey_number = ?""",
-                    (player["nba_team_name"], player["jersey_number"]),
-                ).fetchall()
+                candidates = [row for row in existing_rows if row["nba_team_name"] == player["nba_team_name"] and row["jersey_number"] == player["jersey_number"]]
                 if len(candidates) == 1:
                     existing = candidates[0]
-
-            if existing:
-                connection.execute(
-                    """UPDATE players SET nba_player_id = ?, source_key = ?,
-                           full_name = ?, position = ?, nba_team_name = ?,
-                           jersey_number = ?, is_active = 1,
-                           updated_at = CURRENT_TIMESTAMP
-                       WHERE player_id = ?""",
-                    (
-                        player["nba_player_id"],
-                        player["source_key"],
-                        player["full_name"],
-                        player["position"],
-                        player["nba_team_name"],
-                        player["jersey_number"],
-                        existing["player_id"],
-                    ),
-                )
-            else:
-                connection.execute(
-                    """INSERT INTO players
-                           (nba_player_id, source_key, full_name, position,
-                            nba_team_name, jersey_number, is_active)
-                       VALUES (?, ?, ?, ?, ?, ?, 1)""",
-                    (
-                        player["nba_player_id"],
-                        player["source_key"],
-                        player["full_name"],
-                        player["position"],
-                        player["nba_team_name"],
-                        player["jersey_number"],
-                    ),
-                )
-        return connection.execute(
-            "SELECT COUNT(*) FROM players WHERE is_active = 1"
-        ).fetchone()[0]
+            if existing is None:
+                existing = {"player_id": next_id}
+                next_id += 1
+                existing_rows.append(existing)
+            existing.update(player)
+            updates.append((existing["player_id"], player["nba_player_id"], player["source_key"],
+                            player["full_name"], player["position"], player["nba_team_name"], player["jersey_number"]))
+        connection.execute("UPDATE players SET is_active = 0")
+        connection.executemany(
+            """INSERT INTO players
+               (player_id, nba_player_id, source_key, full_name, position, nba_team_name, jersey_number, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+               ON CONFLICT(player_id) DO UPDATE SET nba_player_id = excluded.nba_player_id,
+                 source_key = excluded.source_key, full_name = excluded.full_name,
+                 position = excluded.position, nba_team_name = excluded.nba_team_name,
+                 jersey_number = excluded.jersey_number, is_active = 1, updated_at = CURRENT_TIMESTAMP""",
+            updates,
+        )
+        connection.execute(
+            """INSERT INTO app_metadata (key, value) VALUES ('player_catalog_digest', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""", (digest,)
+        )
+        return connection.execute("SELECT COUNT(*) FROM players WHERE is_active = 1").fetchone()[0]
 
 
 def create_team(name: str) -> int:

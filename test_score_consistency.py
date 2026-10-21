@@ -87,6 +87,19 @@ class ScoreConsistencyTests(unittest.TestCase):
             }])
         self.assert_totals(48)
 
+    def test_export_contains_lineup_and_committed_live_score(self):
+        self.refresh(18)
+        backup = database.export_database_backup()
+        restored = sqlite3.connect(":memory:")
+        try:
+            restored.deserialize(backup)
+            self.assertEqual(restored.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(restored.execute("SELECT player_id, slot FROM weekly_active_rosters").fetchone(), (1, "G1"))
+            self.assertEqual(restored.execute("SELECT SUM(points) FROM weekly_player_scores").fetchone()[0], 48)
+            self.assertEqual(restored.execute("SELECT SUM(points) FROM weekly_score_games").fetchone()[0], 48)
+        finally:
+            restored.close()
+
 
 if __name__ == "__main__":
     unittest.main()

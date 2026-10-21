@@ -1,2 +1,4 @@
 /.env
 /__pycache__
+/.streamlit/secrets.toml
+/nba_league_backup*.db
