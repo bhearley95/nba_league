@@ -7,6 +7,7 @@ import streamlit as st
 
 import database
 from overview_service import OverviewRefresh
+from weekly_score_service import WeeklyScoreRefresh
 from score_service import (
     get_week_schedule,
     normalize_nba_team_name,
@@ -65,6 +66,11 @@ def numeric_column_config(frame, formats: dict[str, str] | None = None) -> dict:
     }
 
 
+@st.cache_resource
+def weekly_score_refresh() -> WeeklyScoreRefresh:
+    return WeeklyScoreRefresh()
+
+
 @st.fragment(run_every="30s")
 def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None:
     """Render one team's grid and refresh live boxscores while it is visible."""
@@ -73,7 +79,9 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         st.info("No active roster has been submitted for this team and week.")
         return
 
-    scores, warnings = update_scores(team_id, week_start)
+    scores, scheduled_games, warnings, refreshing = weekly_score_refresh().poll(team_id, week_start)
+    if refreshing:
+        st.caption("Updating scores and schedule in the background. Showing saved game logs until the next refresh.")
     for warning in warnings:
         st.warning(warning)
 
@@ -114,23 +122,18 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
 
     days = [week_start + timedelta(days=offset) for offset in range(7)]
     scheduled_cells = set()
-    schedule_error = None
-    try:
-        scheduled_games = get_week_schedule(week_start)
-        for player in roster:
-            player_name = player["full_name"]
-            nba_team = normalize_nba_team_name(player["nba_team_name"])
-            for game_day, team_name_for_game in scheduled_games:
-                day_index = (game_day - week_start).days
-                if (
-                    normalize_nba_team_name(team_name_for_game) == nba_team
-                    and 0 <= day_index < 7
-                    and (day_index, player_name) not in played_cells
-                    and (day_index, player_name) not in live_cells
-                ):
-                    scheduled_cells.add((day_index, player_name))
-    except Exception as exc:
-        schedule_error = str(exc)
+    for player in roster:
+        player_name = player["full_name"]
+        nba_team = normalize_nba_team_name(player["nba_team_name"])
+        for game_day, team_name_for_game in scheduled_games:
+            day_index = (game_day - week_start).days
+            if (
+                normalize_nba_team_name(team_name_for_game) == nba_team
+                and 0 <= day_index < 7
+                and (day_index, player_name) not in played_cells
+                and (day_index, player_name) not in live_cells
+            ):
+                scheduled_cells.add((day_index, player_name))
 
     grid.loc[7] = [str(player_totals[name]) for name in player_names]
     display_days = [day.strftime("%a %m/%d") for day in days] + ["Weekly total"]
@@ -161,8 +164,6 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         width="stretch",
         height=370,
     )
-    if schedule_error:
-        st.warning(f"Could not load the NBA schedule; showing scores without schedule highlights. {schedule_error}")
 
 
 @st.cache_resource
