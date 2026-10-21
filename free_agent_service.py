@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from time import monotonic
 import requests
+import re
+from zoneinfo import ZoneInfo
 
 from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.static import teams
@@ -13,6 +15,18 @@ from score_service import LIVE_DATA_BASE
 
 
 STATS_CACHE_TTL = timedelta(hours=3)
+
+
+def nba_today():
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _error_detail(exc):
+    message = str(exc)
+    if database.CLOUD_URL:
+        message = message.replace(database.CLOUD_URL, "[cloud connection]")
+    message = re.sub(r"(?i)(apikey|token|password)=([^&\s]+)", r"\1=[hidden]", message)
+    return f"{type(exc).__name__}: {message}"
 
 
 class FreeAgentRefresh:
@@ -26,10 +40,13 @@ class FreeAgentRefresh:
     @staticmethod
     def _refresh(season, period_start, period_end):
         stats = _fetch_stats(season, period_start, period_end)
-        if period_start is not None:
-            database.save_player_period_stats(season, period_start, period_end, stats)
-        else:
-            database.save_season_player_stats(season, stats)
+        try:
+            if period_start is not None:
+                database.save_player_period_stats(season, period_start, period_end, stats)
+            else:
+                database.save_season_player_stats(season, stats)
+        except Exception as exc:
+            raise RuntimeError(f"Could not save scoring stats to league storage. {_error_detail(exc)}") from None
 
     def poll(self, season, week_start, period_start=None, period_end=None, refresh=False):
         key = (season, period_start, period_end)
@@ -41,8 +58,8 @@ class FreeAgentRefresh:
                     future.result()
                     state["warning"] = None
                     state["retry_at"] = 0
-                except Exception:
-                    state["warning"] = "NBA scoring stats could not be refreshed. Showing saved rankings; retrying in five minutes."
+                except Exception as exc:
+                    state["warning"] = f"Scoring refresh failed. {_error_detail(exc)}. Showing saved rankings; retrying in five minutes."
                     state["retry_at"] = monotonic() + 300
                 state["future"] = None
             leaders, fetched_at = database.get_free_agent_rankings(season, week_start, period_start, period_end)
@@ -113,13 +130,24 @@ def _fetch_completed_boxscore(game):
 
 
 def _fetch_stats_from_boxscores(season, period_start=None, period_end=None):
+    today = nba_today()
     start = period_start.isoformat() if period_start else f"{season[:4]}-10-01"
-    end = min(period_end or date.today(), date.today()).isoformat()
+    end = min(period_end or today, today).isoformat()
     games = {game["game_id"]: game for game in get_season_schedule(season)
              if start <= game["game_date"] <= end}
     saved = {game["game_id"]: game for game in database.get_completed_boxscores(season)
              if game["game_id"] in games}
     missing = [game for game_id, game in games.items() if game_id not in saved]
+    if any(game["game_date"] == today.isoformat() for game in missing):
+        response = requests.get(f"{LIVE_DATA_BASE}/scoreboard/todaysScoreboard_00.json", timeout=10)
+        response.raise_for_status()
+        scoreboard = response.json()["scoreboard"]
+        final_ids = {
+            str(game["gameId"]) for game in scoreboard.get("games", [])
+            if int(game.get("gameStatus", 0)) == 3
+        } if scoreboard["gameDate"] == today.isoformat() else set()
+        missing = [game for game in missing
+                   if game["game_date"] < today.isoformat() or game["game_id"] in final_ids]
     completed = []
     try:
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -148,8 +176,11 @@ def _fetch_stats_from_boxscores(season, period_start=None, period_end=None):
 def _fetch_stats(season, period_start=None, period_end=None):
     try:
         return _fetch_stats_from_stats_api(season, period_start, period_end)
-    except requests.RequestException:
-        return _fetch_stats_from_boxscores(season, period_start, period_end)
+    except (requests.RequestException, ValueError, KeyError, IndexError):
+        try:
+            return _fetch_stats_from_boxscores(season, period_start, period_end)
+        except Exception as exc:
+            raise RuntimeError(f"Could not load NBA completed-game scoring data. {_error_detail(exc)}") from None
 
 
 def get_scoring_leaders(

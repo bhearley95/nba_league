@@ -7,9 +7,35 @@ from streamlit.testing.v1 import AppTest
 from score_service import HISTORY_WARNING
 from schedule_service import get_week_schedule
 import test_score_consistency as fixtures
+import database
 
 
 class ScorePageTests(unittest.TestCase):
+    def test_schema_version_change_runs_initialization_with_existing_cache(self):
+        fixture = fixtures.ScoreConsistencyTests()
+        fixture.setUp()
+        st.cache_resource.clear()
+        shared = Mock()
+        shared.poll.return_value = ([], set(), [], False)
+        try:
+            with (
+                patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("database.sync_player_catalog", return_value=1),
+                patch("database.initialize_database", wraps=database.initialize_database) as initialize,
+            ):
+                app = AppTest.from_file("app.py", default_timeout=15).run()
+                self.assertEqual(len(app.exception), 0)
+                self.assertEqual(initialize.call_count, 1)
+                app.run()
+                self.assertEqual(initialize.call_count, 1)
+                with patch.object(database, "SCHEMA_VERSION", database.SCHEMA_VERSION + 1):
+                    app.run()
+                self.assertEqual(len(app.error), 0)
+                self.assertEqual(initialize.call_count, 2)
+        finally:
+            st.cache_resource.clear()
+            fixture.tearDown()
+
     def test_overview_and_weekly_grid_use_same_saved_total(self):
         fixture = fixtures.ScoreConsistencyTests()
         fixture.setUp()

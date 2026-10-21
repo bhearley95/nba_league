@@ -5,10 +5,42 @@ from unittest.mock import patch
 
 import requests
 
-from free_agent_service import FreeAgentRefresh, _fetch_stats, _fetch_stats_from_boxscores
+from free_agent_service import FreeAgentRefresh, _fetch_stats, _fetch_stats_from_boxscores, _error_detail
 
 
 class FreeAgentServiceTests(unittest.TestCase):
+    def test_fallback_skips_live_unstarted_and_next_day_games(self):
+        games = [{"game_id": game_id, "game_date": day, "nba_team_name": "Test"}
+                 for game_id, day in [("final", "2026-10-20"), ("live", "2026-10-20"),
+                                      ("pregame", "2026-10-20"), ("tomorrow", "2026-10-21")]]
+        completed = {**games[0], "players": [{"nba_player_id": 123, "points": 24, "nba_team_name": "Test"}]}
+        with (
+            patch("free_agent_service.nba_today", return_value=date(2026, 10, 20)),
+            patch("free_agent_service.get_season_schedule", return_value=games),
+            patch("free_agent_service.database.get_completed_boxscores", return_value=[]),
+            patch("free_agent_service.database.save_completed_boxscores") as save,
+            patch("free_agent_service.requests.get") as scoreboard,
+            patch("free_agent_service._fetch_completed_boxscore", return_value=completed) as boxscore,
+        ):
+            scoreboard.return_value.json.return_value = {"scoreboard": {"gameDate": "2026-10-20", "games": [
+                {"gameId": "final", "gameStatus": 3}, {"gameId": "live", "gameStatus": 2},
+                {"gameId": "pregame", "gameStatus": 1},
+            ]}}
+            result = _fetch_stats_from_boxscores("2026-27")
+            boxscore.assert_called_once_with(games[0])
+            save.assert_called_once_with("2026-27", [completed])
+            self.assertEqual(result[0]["points_per_game"], 24)
+
+    def test_failure_details_identify_storage_and_hide_credentials(self):
+        with patch("free_agent_service.database.CLOUD_URL", "sqlitecloud://host/db?apikey=secret"):
+            self.assertNotIn("secret", _error_detail(RuntimeError("Failed sqlitecloud://host/db?apikey=secret")))
+        with (
+            patch("free_agent_service._fetch_stats", return_value=[]),
+            patch("free_agent_service.database.save_season_player_stats", side_effect=RuntimeError("missing table")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "save scoring stats to league storage.*missing table"):
+                FreeAgentRefresh._refresh("2026-27", None, None)
+
     def test_stats_timeout_uses_nba_boxscore_fallback(self):
         expected = [{"nba_player_id": 123, "points_per_game": 20}]
         with (

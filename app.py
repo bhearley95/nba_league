@@ -52,13 +52,13 @@ if not database.CLOUD_URL:
 
 
 @st.cache_resource
-def initialize_storage(storage_key: str) -> None:
+def initialize_storage(storage_key: str, schema_version: int) -> None:
     database.initialize_database()
 
 
 storage_key = hashlib.sha256((database.CLOUD_URL or str(database.DATABASE_PATH)).encode()).hexdigest()
 try:
-    initialize_storage(storage_key)
+    initialize_storage(storage_key, database.SCHEMA_VERSION)
 except Exception:
     st.error("Could not open the league database. Check the configured database connection and permissions.")
     st.stop()

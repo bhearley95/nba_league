@@ -16,6 +16,7 @@ DATABASE_PATH = Path(
     os.environ.get("NBA_FANTASY_DB", Path(__file__).with_name("nba_fantasy.db"))
 )
 CLOUD_URL = os.environ.get("SQLITECLOUD_URL", "")
+SCHEMA_VERSION = 2
 
 
 class _Connection(sqlite3.Connection):
