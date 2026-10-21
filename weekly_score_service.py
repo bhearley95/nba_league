@@ -6,7 +6,7 @@ from threading import Lock
 from time import monotonic
 
 import database
-from score_service import get_week_schedule, refresh_player_logs_for_week, season_for_week, update_scores
+from score_service import get_week_schedule, refresh_player_logs_for_week, update_scores
 
 
 class WeeklyScoreRefresh:
@@ -15,6 +15,7 @@ class WeeklyScoreRefresh:
         self.history_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weekly-history")
         self.lock = Lock()
         self.requests = {}
+        self.schedules = {}
 
     def _poll(self, key, fetch, empty, interval, executor=None):
         # Called with the lock held. Never wait for unfinished network requests.
@@ -38,13 +39,12 @@ class WeeklyScoreRefresh:
 
     def poll(self, team_id: int, week_start: date):
         with self.lock:
-            saved_schedule = set()
-            if ("schedule", week_start) not in self.requests:
-                saved_schedule = {
-                    (date.fromisoformat(game["game_date"]), game["nba_team_name"])
-                    for game in database.get_nba_season_schedule(season_for_week(week_start))
-                    if 0 <= (date.fromisoformat(game["game_date"]) - week_start).days < 7
-                }
+            schedule_warnings = []
+            try:
+                self.schedules[week_start] = get_week_schedule(week_start)
+            except Exception as exc:
+                schedule_warnings = [f"Could not load the saved NBA schedule. {exc}"]
+            schedule = self.schedules.get(week_start, set())
             scores, score_warnings, scoring = self._poll(
                 ("scores", team_id, week_start),
                 lambda: update_scores(team_id, week_start, refresh_logs=False), [], 30,
@@ -56,8 +56,4 @@ class WeeklyScoreRefresh:
                     week_start,
                 )), None, 300, self.history_executor,
             )
-            schedule, schedule_warnings, scheduling = self._poll(
-                ("schedule", week_start),
-                lambda: (get_week_schedule(week_start), []), saved_schedule, 300,
-            )
-        return scores, schedule, score_warnings + schedule_warnings + history_warnings, scoring or scheduling
+        return scores, schedule, score_warnings + schedule_warnings + history_warnings, scoring

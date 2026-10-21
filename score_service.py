@@ -7,7 +7,7 @@ from time import monotonic
 
 import requests
 from nba_api.stats.endpoints import playergamelog
-from nba_api.stats.endpoints import scheduleleaguev2
+from schedule_service import get_season_schedule, get_week_schedule
 
 import database
 from nba_api.stats.static import teams as nba_teams
@@ -38,61 +38,6 @@ def normalize_nba_team_name(name: str) -> str:
         "lalakers": "losangeleslakers",
         "laclippers": "losangelesclippers",
     }.get(key, key)
-
-
-def _fetch_season_schedule(season: str) -> list[dict]:
-    """Fetch and normalize the NBA regular-season schedule."""
-    frame = scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=30).get_data_frames()[0]
-    games = set()
-    for _, game in frame.iterrows():
-        game_id = str(game.get("gameId", ""))
-        # NBA schedule also includes preseason and postseason games; fantasy
-        # scoring follows the regular season only.
-        if not game_id.startswith("002"):
-            continue
-        raw_game_date = str(game.get("gameDate", ""))
-        try:
-            game_date = datetime.strptime(raw_game_date, "%m/%d/%Y %H:%M:%S").date().isoformat()
-        except ValueError:
-            try:
-                game_date = datetime.fromisoformat(raw_game_date[:10]).date().isoformat()
-            except ValueError:
-                continue
-        if not game_date:
-            continue
-        for side in ("homeTeam", "awayTeam"):
-            name = game.get(f"{side}_teamName")
-            city = game.get(f"{side}_teamCity")
-            if not name or str(name).casefold() == "nan":
-                continue
-            city_name = "" if not city or str(city).casefold() == "nan" else str(city)
-            full_name = f"{city_name} {name}".strip()
-            if full_name == "LA Clippers":
-                full_name = "Los Angeles Clippers"
-            games.add((game_date, full_name, game_id))
-    return [
-        {"game_date": game_date, "nba_team_name": team_name, "game_id": game_id}
-        for game_date, team_name, game_id in sorted(games)
-    ]
-
-
-def get_season_schedule(season: str, refresh: bool = False) -> list[dict]:
-    """Return a locally saved schedule, fetching it only when needed or requested."""
-    rows = database.get_nba_season_schedule(season)
-    if refresh or not rows:
-        database.save_nba_season_schedule(season, _fetch_season_schedule(season))
-        rows = database.get_nba_season_schedule(season)
-    return [dict(row) for row in rows]
-
-
-def get_week_schedule(week_start: date) -> set[tuple[date, str]]:
-    """Return (game date, NBA team name) pairs scheduled during this week."""
-    start, end = week_start, week_start + timedelta(days=6)
-    return {
-        (date.fromisoformat(game["game_date"]), game["nba_team_name"])
-        for game in get_season_schedule(season_for_week(week_start))
-        if start.isoformat() <= game["game_date"] <= end.isoformat()
-    }
 
 
 def get_live_player_points(

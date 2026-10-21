@@ -667,12 +667,11 @@ elif page == "Schedule Grid":
     season = season_for_week(FANTASY_SEASON_START)
     st.write(
         f"Regular-season games per NBA team for each fantasy week in the {season} season. "
-        "The schedule is saved in SQLite and reused by the Weekly Scores tab."
+        "The schedule is bundled with the app and reused by the Weekly Scores tab."
     )
-    refresh_schedule = st.button("Refresh NBA schedule", key="refresh_nba_schedule")
     try:
         with st.spinner("Loading the saved NBA schedule…"):
-            schedule = get_season_schedule(season, refresh=refresh_schedule)
+            schedule = get_season_schedule(season)
         if not schedule:
             st.warning("The NBA schedule did not return any regular-season games.")
         else:
