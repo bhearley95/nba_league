@@ -207,6 +207,8 @@ def update_scores(
     team_id: int,
     week_start: date,
     players_by_slot: dict[str, dict] | None = None,
+    *,
+    refresh_logs: bool = True,
 ) -> tuple[list[dict], list[str]]:
     """Refresh stale game logs and save all active-player scores for a team/week."""
     if players_by_slot is None:
@@ -231,7 +233,10 @@ def update_scores(
             )
 
     for slot, player in players_by_slot.items():
-        error, status = _refresh_player_log(player, season)
+        if refresh_logs:
+            error, status = _refresh_player_log(player, season)
+        else:
+            error, status = None, "Saved game logs"
         if error:
             warnings.append(f"{player['full_name']}: {error} ({status.lower()}).")
 

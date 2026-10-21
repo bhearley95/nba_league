@@ -6,16 +6,17 @@ from threading import Lock
 from time import monotonic
 
 import database
-from score_service import get_week_schedule, season_for_week, update_scores
+from score_service import get_week_schedule, refresh_player_logs_for_week, season_for_week, update_scores
 
 
 class WeeklyScoreRefresh:
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="weekly-scores")
+        self.history_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weekly-history")
         self.lock = Lock()
         self.requests = {}
 
-    def _poll(self, key, fetch, empty, interval):
+    def _poll(self, key, fetch, empty, interval, executor=None):
         # Called with the lock held. Never wait for unfinished network requests.
         state = self.requests.setdefault(
             key, {"future": None, "finished": None, "value": empty, "warnings": []}
@@ -32,7 +33,7 @@ class WeeklyScoreRefresh:
         if state["future"] is None and (
             state["finished"] is None or monotonic() - state["finished"] >= interval
         ):
-            state["future"] = self.executor.submit(fetch)
+            state["future"] = (executor or self.executor).submit(fetch)
         return state["value"], list(state["warnings"]), state["future"] is not None
 
     def poll(self, team_id: int, week_start: date):
@@ -46,10 +47,17 @@ class WeeklyScoreRefresh:
                 }
             scores, score_warnings, scoring = self._poll(
                 ("scores", team_id, week_start),
-                lambda: update_scores(team_id, week_start), [], 30,
+                lambda: update_scores(team_id, week_start, refresh_logs=False), [], 30,
+            )
+            _, history_warnings, _ = self._poll(
+                ("game logs", team_id, week_start),
+                lambda: (None, refresh_player_logs_for_week(
+                    [dict(row) for row in database.get_week_active_roster(team_id, week_start)],
+                    week_start,
+                )), None, 300, self.history_executor,
             )
             schedule, schedule_warnings, scheduling = self._poll(
                 ("schedule", week_start),
                 lambda: (get_week_schedule(week_start), []), saved_schedule, 300,
             )
-        return scores, schedule, score_warnings + schedule_warnings, scoring or scheduling
+        return scores, schedule, score_warnings + schedule_warnings + history_warnings, scoring or scheduling

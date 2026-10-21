@@ -15,11 +15,18 @@ class WeeklyScoreRefreshTests(unittest.TestCase):
             "weekly_score_service.database.get_nba_season_schedule", return_value=[]
         )
         self.schedule_patch.start()
+        self.history_patch = patch("weekly_score_service.refresh_player_logs_for_week", return_value=[])
+        self.roster_patch = patch("weekly_score_service.database.get_week_active_roster", return_value=[])
+        self.history_patch.start()
+        self.roster_patch.start()
 
     def tearDown(self):
         self.release.set()
         self.worker.executor.shutdown(wait=True)
+        self.worker.history_executor.shutdown(wait=True)
         self.schedule_patch.stop()
+        self.history_patch.stop()
+        self.roster_patch.stop()
 
     def finish_requests(self):
         for state in list(self.worker.requests.values()):
@@ -27,7 +34,7 @@ class WeeklyScoreRefreshTests(unittest.TestCase):
                 state["future"].result(timeout=1)
 
     def test_slow_scores_and_schedule_do_not_block_or_duplicate(self):
-        def scores(*args):
+        def scores(*args, **kwargs):
             self.release.wait(timeout=5)
             return [{"player_id": 1, "live_points": 12}], []
 
@@ -52,7 +59,7 @@ class WeeklyScoreRefreshTests(unittest.TestCase):
 
     def test_schedule_shared_but_team_scores_kept_separate(self):
         with (
-            patch("weekly_score_service.update_scores", side_effect=lambda team, week: ([{"player_id": team}], [])),
+            patch("weekly_score_service.update_scores", side_effect=lambda team, week, **kwargs: ([{"player_id": team}], [])),
             patch("weekly_score_service.get_week_schedule", return_value=set()) as schedule,
         ):
             self.worker.poll(1, self.week)
@@ -81,6 +88,29 @@ class WeeklyScoreRefreshTests(unittest.TestCase):
             self.assertEqual(schedule, {(self.week, "Boston Celtics")})
             self.assertIn("offline", warnings[0])
             self.assertFalse(refreshing)
+
+    def test_live_scores_available_while_history_is_still_blocked(self):
+        history_started = Event()
+
+        def slow_history(*args):
+            history_started.set()
+            self.release.wait(timeout=5)
+            return []
+
+        live = [{"player_id": 1, "live_points": 18, "live_status": "Live"}]
+        with (
+            patch("weekly_score_service.update_scores", return_value=(live, [])) as update,
+            patch("weekly_score_service.get_week_schedule", return_value=set()),
+            patch("weekly_score_service.refresh_player_logs_for_week", side_effect=slow_history),
+        ):
+            self.worker.poll(1, self.week)
+            self.assertTrue(history_started.wait(timeout=1))
+            self.worker.requests[("scores", 1, self.week)]["future"].result(timeout=1)
+            self.assertEqual(self.worker.poll(1, self.week)[0], live)
+            self.assertFalse(self.worker.requests[("game logs", 1, self.week)]["future"].done())
+            update.assert_called_once_with(1, self.week, refresh_logs=False)
+            self.release.set()
+            self.finish_requests()
 
 
 if __name__ == "__main__":
