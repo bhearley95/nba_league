@@ -8,6 +8,42 @@ from score_service import HISTORY_WARNING
 
 
 class OverviewRefreshTests(unittest.TestCase):
+    def test_cached_leaderboard_returns_while_cloud_refresh_is_blocked(self):
+        from threading import Event
+        release = Event()
+        shared = Mock()
+        shared.poll.return_value = ([], set(), [], False)
+        worker = OverviewRefresh(shared)
+        week = date(2026, 10, 19)
+        rows = [{"id": 1, "name": "A", "current_week_points": 48}]
+
+        def slow_read(*args):
+            release.wait(timeout=5)
+            return rows
+
+        try:
+            with (
+                patch("overview_service.database.get_leaderboard", side_effect=slow_read) as read,
+                patch("overview_service.database.get_teams", return_value=[]),
+            ):
+                first = worker.get_snapshot(week, week)
+                self.assertIsNone(first[0])
+                future = worker.snapshots[(week, week)]["future"]
+                self.assertIs(worker.snapshots[(week, week)]["future"], future)
+                self.assertIsNone(worker.get_snapshot(week, week)[0])
+                release.set()
+                future.result(timeout=1)
+                self.assertEqual(worker.get_snapshot(week, week)[0], rows)
+                self.assertEqual(read.call_count, 1)
+                release.clear()
+                with patch("overview_service.monotonic", return_value=worker.snapshots[(week, week)]["finished"] + 31):
+                    cached = worker.get_snapshot(week, week)
+                self.assertEqual(cached[0], rows)
+                self.assertTrue(cached[2])
+        finally:
+            release.set()
+            worker.executor.shutdown(wait=True)
+
     def test_overview_uses_shared_weekly_worker(self):
         shared = Mock()
         shared.poll.return_value = ([], set(), [HISTORY_WARNING], True)

@@ -223,7 +223,7 @@ def overview_refresh(storage_key: str) -> OverviewRefresh:
     return OverviewRefresh(weekly_score_refresh(storage_key))
 
 
-@st.fragment(run_every="30s")
+@st.fragment(run_every="5s")
 def render_overview(week_start: date, as_of: date) -> None:
     """Show saved scores immediately while refreshing NBA data in the background."""
     st.title("League Overview")
@@ -234,11 +234,12 @@ def render_overview(week_start: date, as_of: date) -> None:
     )
     st.caption("Scores refresh every 30 seconds while this page is open.")
 
-    warnings, refreshing = overview_refresh(storage_key).poll(week_start)
+    leaderboard, warnings, refreshing, updated_at = overview_refresh(storage_key).get_snapshot(week_start, as_of)
     if refreshing:
         st.caption("Updating NBA scores in the background. Showing saved scores until the next refresh.")
 
-    leaderboard = database.get_leaderboard(week_start, as_of)
+    if updated_at:
+        st.caption(f"Standings last loaded: {updated_at:%H:%M:%S} UTC")
     if leaderboard:
         st.subheader("League leaderboard")
         leaderboard_frame = pd.DataFrame([dict(team) for team in leaderboard])
@@ -263,6 +264,8 @@ def render_overview(week_start: date, as_of: date) -> None:
         st.caption(
             "Weekly wins are counted after the week ends and once every team has a complete score; tied teams each receive a win."
         )
+    elif leaderboard is None:
+        st.info("Loading saved standings...")
     else:
         st.info("No league teams have been added yet. Add teams in League Setup to get started.")
 

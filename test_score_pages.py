@@ -20,6 +20,7 @@ class ScorePageTests(unittest.TestCase):
         try:
             with (
                 patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("overview_service.OverviewRefresh.get_snapshot", side_effect=lambda week, as_of: (database.get_leaderboard(week, as_of), [], False, None)),
                 patch("database.sync_player_catalog", return_value=1),
                 patch("database.initialize_database", wraps=database.initialize_database) as initialize,
             ):
@@ -46,6 +47,7 @@ class ScorePageTests(unittest.TestCase):
             shared.poll.return_value = ([], get_week_schedule(fixture.week), [HISTORY_WARNING], False)
             with (
                 patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("overview_service.OverviewRefresh.get_snapshot", side_effect=lambda week, as_of: (database.get_leaderboard(week, as_of), [], False, None)),
                 patch("database.sync_player_catalog", return_value=1),
             ):
                 app = AppTest.from_file("app.py", default_timeout=15).run()
