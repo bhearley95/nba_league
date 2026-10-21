@@ -174,6 +174,24 @@ def refresh_player_logs_for_week(
     return warnings
 
 
+def refresh_roster_game_logs(players: list[dict], week_start: date) -> list[str]:
+    """Populate all rostered players from the working completed-boxscore feed."""
+    from free_agent_service import _fetch_stats_from_boxscores
+    season = season_for_week(week_start)
+    _fetch_stats_from_boxscores(season, week_start, week_start + timedelta(days=6))
+    player_ids = {p["nba_player_id"]: p["player_id"] for p in players if p["nba_player_id"] is not None}
+    games = []
+    for game in database.get_completed_boxscores(season):
+        if not week_start.isoformat() <= game["game_date"] <= (week_start + timedelta(days=6)).isoformat():
+            continue
+        for player in game["players"]:
+            if player["nba_player_id"] in player_ids:
+                games.append({"player_id": player_ids[player["nba_player_id"]], "game_date": game["game_date"],
+                              "points": player["points"], "status": "Final"})
+    database.save_roster_game_points(season, games)
+    return []
+
+
 def update_scores(
     team_id: int,
     week_start: date,
@@ -198,7 +216,16 @@ def update_scores(
     live_points = {}
     today = date.today()
     if week_start <= today <= week_start + timedelta(days=6):
-        live_points, live_error = get_live_player_points(list(players_by_slot.values()))
+        roster = [dict(row) for row in database.get_team_roster(team_id, week_start)]
+        roster_by_id = {p["player_id"]: p for p in [*roster, *players_by_slot.values()]}
+        live_points, live_error = get_live_player_points(list(roster_by_id.values()))
+        database.save_roster_game_points(season, [
+            {"player_id": player["player_id"], "game_date": game["game_date"].isoformat(),
+             "points": game["points"], "status": game["status"]}
+            for player in roster_by_id.values()
+            if (game := live_points.get(player["nba_player_id"]))
+            and week_start <= game["game_date"] <= week_start + timedelta(days=6)
+        ])
         if live_error:
             warnings.append(
                 f"Live NBA scores unavailable; showing the last saved scores. {live_error}"

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import database
-from score_service import update_scores
+from score_service import update_scores, refresh_roster_game_logs
 
 
 class GameDate(date):
@@ -18,6 +18,29 @@ class GameDate(date):
 
 
 class ScoreConsistencyTests(unittest.TestCase):
+    def test_bench_live_and_completed_points_update_without_affecting_starters_total(self):
+        with database.connect() as c:
+            c.execute("""INSERT INTO players(player_id,nba_player_id,source_key,full_name,position,nba_team_name)
+                VALUES (2,456,'bench','Bench Player','G','Boston Celtics')""")
+            c.executemany("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,?)", [(1,), (2,)])
+        database.save_player_season_logs(2, '2026-27', [{"game_date":"2026-10-21", "points":4, "matchup":"TEST"}])
+        with patch('score_service.get_live_player_points', return_value=({
+            123: {"game_date":date(2026,10,21), "points":18, "status":"Live"},
+            456: {"game_date":date(2026,10,21), "points":17, "status":"Live"},
+        }, None)) as fetch:
+            update_scores(1, self.week, refresh_logs=False)
+        self.assertEqual({p['nba_player_id'] for p in fetch.call_args.args[0]}, {123,456})
+        self.assertEqual(database.get_players_week_totals([1,2], '2026-27', self.week)[2], 17)
+        self.assert_totals(48)
+        database.save_completed_boxscores('2026-27', [{
+            "game_id":"002test", "game_date":"2026-10-21",
+            "players":[{"nba_player_id":456,"points":22,"nba_team_name":"Boston Celtics"}],
+        }])
+        with patch('free_agent_service._fetch_stats_from_boxscores'):
+            refresh_roster_game_logs([dict(row) for row in database.get_team_roster(1,self.week)], self.week)
+        self.assertEqual(database.get_players_week_totals([1,2], '2026-27', self.week)[2], 22)
+        self.assert_totals(48)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.path_patch = patch.object(database, "DATABASE_PATH", Path(self.directory.name) / "test.db")

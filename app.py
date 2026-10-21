@@ -136,6 +136,66 @@ def render_free_agents(season, week_start, period_start, period_end):
 
 
 @st.fragment(run_every="30s")
+def render_roster_weekly_points(team_id: int, team_name: str, week_start: date):
+    team_roster = [dict(row) for row in database.get_team_roster(team_id, week_start)]
+    slot_labels = {"C": "C", "F1": "F", "F2": "F", "G1": "G", "G2": "G"}
+    # Refresh all ten players off-thread; never wait for the NBA API here.
+    _, _, warnings, refreshing = weekly_score_refresh(storage_key).poll(team_id, week_start)
+    render_score_warnings(warnings)
+    if refreshing:
+        st.caption("Showing saved weekly points while player stats update in the background.")
+    active_roster = [dict(row) for row in database.get_week_active_roster(team_id, week_start)]
+    scores, _ = database.get_week_score_snapshot(team_id, week_start)
+    points_by_player = database.get_players_week_totals(
+        [player["player_id"] for player in team_roster], season_for_week(week_start), week_start
+    )
+    points_by_player.update({score["player_id"]: score["points"] for score in scores})
+    if active_roster:
+        st.metric(f"{team_name} weekly points", sum(score["points"] for score in scores))
+    active_slot_by_player = {
+        player["player_id"]: slot_labels[player["slot"]]
+        for player in active_roster
+    }
+    season = season_for_week(week_start)
+    roster_order = {
+        player["player_id"]: index
+        for index, player in enumerate(team_roster)
+    }
+    roster_display = sorted(
+        team_roster,
+        key=lambda player: (
+            {"C": 0, "F": 1, "G": 2}.get(
+                active_slot_by_player.get(player["player_id"], "BN"), 3
+            ),
+            roster_order[player["player_id"]],
+        ),
+    )
+    score_frame = pd.DataFrame(
+        [
+            {
+                "Position": active_slot_by_player.get(
+                    player["player_id"], "BN"
+                ),
+                "Player": player["full_name"],
+                "NBA Team": player["nba_team_name"],
+                "Points": points_by_player.get(player["player_id"], 0),
+            }
+            for player in roster_display
+        ]
+    )
+    st.dataframe(
+        score_frame,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Points": st.column_config.NumberColumn(
+                format="%d", alignment="left"
+            )
+        },
+    )
+
+
+@st.fragment(run_every="30s")
 def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None:
     """Render one team's grid and refresh live boxscores while it is visible."""
     roster = [dict(row) for row in database.get_week_active_roster(team_id, week_start)]
@@ -642,60 +702,7 @@ elif page == "Rosters":
                     except ValueError as exc:
                         st.error(str(exc))
 
-            # Refresh all ten players off-thread; never wait for the NBA API here.
-            _, _, warnings, refreshing = weekly_score_refresh(storage_key).poll(team_id, week_start)
-            render_score_warnings(warnings)
-            if refreshing:
-                st.caption("Showing saved weekly points while player stats update in the background.")
-            active_roster = [dict(row) for row in database.get_week_active_roster(team_id, week_start)]
-            scores, _ = database.get_week_score_snapshot(team_id, week_start)
-            points_by_player = database.get_players_week_totals(
-                [player["player_id"] for player in team_roster], season_for_week(week_start), week_start
-            )
-            points_by_player.update({score["player_id"]: score["points"] for score in scores})
-            if active_roster:
-                st.metric(f"{team['name']} weekly points", sum(score["points"] for score in scores))
-            active_slot_by_player = {
-                player["player_id"]: slot_labels[player["slot"]]
-                for player in active_roster
-            }
-            season = season_for_week(week_start)
-            roster_order = {
-                player["player_id"]: index
-                for index, player in enumerate(team_roster)
-            }
-            roster_display = sorted(
-                team_roster,
-                key=lambda player: (
-                    {"C": 0, "F": 1, "G": 2}.get(
-                        active_slot_by_player.get(player["player_id"], "BN"), 3
-                    ),
-                    roster_order[player["player_id"]],
-                ),
-            )
-            score_frame = pd.DataFrame(
-                [
-                    {
-                        "Position": active_slot_by_player.get(
-                            player["player_id"], "BN"
-                        ),
-                        "Player": player["full_name"],
-                        "NBA Team": player["nba_team_name"],
-                        "Points": points_by_player.get(player["player_id"], 0),
-                    }
-                    for player in roster_display
-                ]
-            )
-            st.dataframe(
-                score_frame,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Points": st.column_config.NumberColumn(
-                        format="%d", alignment="left"
-                    )
-                },
-            )
+            render_roster_weekly_points(team_id, team["name"], week_start)
 
 elif page == "Schedule Grid":
     from score_service import get_season_schedule, season_for_week

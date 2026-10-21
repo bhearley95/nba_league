@@ -16,7 +16,7 @@ DATABASE_PATH = Path(
     os.environ.get("NBA_FANTASY_DB", Path(__file__).with_name("nba_fantasy.db"))
 )
 CLOUD_URL = os.environ.get("SQLITECLOUD_URL", "")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class _Connection(sqlite3.Connection):
@@ -62,6 +62,15 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             game_date TEXT NOT NULL,
             players_json TEXT NOT NULL,
             PRIMARY KEY (season, game_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS roster_player_games (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season TEXT NOT NULL,
+            game_date TEXT NOT NULL,
+            points INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            PRIMARY KEY (player_id, season, game_date)
         );
 
         CREATE TABLE IF NOT EXISTS fantasy_teams (
@@ -733,10 +742,14 @@ def get_player_week_points(player_id: int, season: str, week_start: date) -> int
 def get_player_week_games(player_id: int, season: str, week_start: date) -> list[dict]:
     with connect() as connection:
         rows = connection.execute(
-            """SELECT game_date, points, 'Historical' AS status FROM player_game_logs
+            """SELECT game_date, points, 'Historical' AS status FROM player_game_logs h
                WHERE player_id = ? AND season = ?
-                 AND game_date >= ? AND game_date <= date(?, '+6 days')""",
-            (player_id, season, week_start.isoformat(), week_start.isoformat()),
+                 AND game_date >= ? AND game_date <= date(?, '+6 days')
+                 AND NOT EXISTS (SELECT 1 FROM roster_player_games r WHERE r.player_id=h.player_id
+                   AND r.season=h.season AND r.game_date=h.game_date)
+               UNION ALL SELECT game_date, points, status FROM roster_player_games
+               WHERE player_id = ? AND season = ? AND game_date >= ? AND game_date <= date(?, '+6 days')""",
+            (player_id, season, week_start.isoformat(), week_start.isoformat()) * 2,
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -748,12 +761,27 @@ def get_players_week_totals(player_ids: list[int], season: str, week_start: date
     placeholders = ",".join("?" for _ in player_ids)
     with connect() as connection:
         rows = connection.execute(
-            f"""SELECT player_id, SUM(points) AS points FROM player_game_logs
+            f"""WITH games AS (
+                SELECT player_id, season, game_date, points FROM player_game_logs h
+                WHERE NOT EXISTS (SELECT 1 FROM roster_player_games r WHERE r.player_id=h.player_id
+                  AND r.season=h.season AND r.game_date=h.game_date)
+                UNION ALL SELECT player_id, season, game_date, points FROM roster_player_games)
+                SELECT player_id, SUM(points) AS points FROM games
                 WHERE season = ? AND game_date >= ? AND game_date <= date(?, '+6 days')
                   AND player_id IN ({placeholders}) GROUP BY player_id""",
             [season, week_start.isoformat(), week_start.isoformat(), *player_ids],
         ).fetchall()
     return {row["player_id"]: int(row["points"]) for row in rows}
+
+
+def save_roster_game_points(season: str, games: list[dict]) -> None:
+    with connect() as connection:
+        connection.executemany(
+            """INSERT INTO roster_player_games(player_id,season,game_date,points,status)
+               VALUES (?,?,?,?,?) ON CONFLICT(player_id,season,game_date) DO UPDATE SET
+               points=excluded.points, status=excluded.status""",
+            [(g["player_id"], season, g["game_date"], g["points"], g["status"]) for g in games],
+        )
 
 
 def get_player_game_points_on_date(

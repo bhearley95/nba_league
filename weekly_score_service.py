@@ -6,7 +6,7 @@ from threading import Lock
 from time import monotonic
 
 import database
-from score_service import get_week_schedule, refresh_player_logs_for_week, update_scores
+from score_service import get_week_schedule, refresh_roster_game_logs as refresh_player_logs_for_week, update_scores
 
 
 class WeeklyScoreRefresh:

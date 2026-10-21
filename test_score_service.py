@@ -19,6 +19,8 @@ class LiveScoreTests(unittest.TestCase):
             }, None)),
             patch("score_service._refresh_player_log", side_effect=AssertionError("History must not block live scores")) as history,
             patch("score_service.database.get_week_score_snapshot", return_value=([], [])),
+            patch("score_service.database.get_team_roster", return_value=[]),
+            patch("score_service.database.save_roster_game_points"),
             patch("score_service.database.get_player_week_games", return_value=[
                 {"game_date": (today - timedelta(days=1)).isoformat(), "points": 30, "status": "Historical"},
                 {"game_date": today.isoformat(), "points": 10, "status": "Historical"},
