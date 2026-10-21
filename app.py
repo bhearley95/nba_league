@@ -9,6 +9,7 @@ import database
 from overview_service import OverviewRefresh
 from weekly_score_service import WeeklyScoreRefresh
 from score_service import (
+    HISTORY_WARNING,
     get_week_schedule,
     normalize_nba_team_name,
     refresh_player_logs_for_week,
@@ -71,6 +72,14 @@ def weekly_score_refresh() -> WeeklyScoreRefresh:
     return WeeklyScoreRefresh()
 
 
+def render_score_warnings(warnings) -> None:
+    for warning in dict.fromkeys(warnings):
+        if warning == HISTORY_WARNING:
+            st.caption("Historical game logs are delayed. Totals use saved game logs and the latest available live scores.")
+        else:
+            st.warning(warning)
+
+
 @st.fragment(run_every="30s")
 def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None:
     """Render one team's grid and refresh live boxscores while it is visible."""
@@ -79,22 +88,22 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         st.info("No active roster has been submitted for this team and week.")
         return
 
-    scores, scheduled_games, warnings, refreshing = weekly_score_refresh().poll(team_id, week_start)
+    _, scheduled_games, warnings, refreshing = weekly_score_refresh().poll(team_id, week_start)
     if refreshing:
         st.caption("Updating scores and schedule in the background. Showing saved game logs until the next refresh.")
-    for warning in warnings:
-        st.warning(warning)
+    render_score_warnings(warnings)
 
-    game_logs = [
-        dict(row) for row in database.get_week_player_game_logs(team_id, week_start)
-    ]
+    scores, game_logs = database.get_week_score_snapshot(team_id, week_start)
     player_names = [player["full_name"] for player in roster]
     player_name_by_id = {player["player_id"]: player["full_name"] for player in roster}
     grid = pd.DataFrame("—", index=range(7), columns=player_names)
     played_cells = set()
     live_cells = {}
     player_totals = {player_name: 0 for player_name in player_names}
-    points_by_player_day = {}
+    for score in scores:
+        player_name = player_name_by_id.get(score["player_id"])
+        if player_name is not None:
+            player_totals[player_name] = score["points"]
     for game in game_logs:
         game_day = date.fromisoformat(game["game_date"])
         day_index = (game_day - week_start).days
@@ -103,22 +112,8 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         player_name = game["full_name"]
         grid.loc[day_index, player_name] = str(game["points"])
         played_cells.add((day_index, player_name))
-        points_by_player_day[(player_name, game_day)] = game["points"]
-        player_totals[player_name] += game["points"]
-
-    for score in scores:
-        if not score.get("live_date"):
-            continue
-        game_day = date.fromisoformat(score["live_date"])
-        day_index = (game_day - week_start).days
-        player_name = player_name_by_id.get(score["player_id"])
-        if player_name is None or not 0 <= day_index < 7:
-            continue
-        old_points = points_by_player_day.get((player_name, game_day), 0)
-        live_points = int(score["live_points"] or 0)
-        player_totals[player_name] += live_points - old_points
-        grid.loc[day_index, player_name] = str(live_points)
-        live_cells[(day_index, player_name)] = score["live_status"]
+        if game["status"] == "Live":
+            live_cells[(day_index, player_name)] = "Live"
 
     days = [week_start + timedelta(days=offset) for offset in range(7)]
     scheduled_cells = set()
@@ -168,7 +163,7 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
 
 @st.cache_resource
 def overview_refresh() -> OverviewRefresh:
-    return OverviewRefresh()
+    return OverviewRefresh(weekly_score_refresh())
 
 
 @st.fragment(run_every="30s")
@@ -214,8 +209,7 @@ def render_overview(week_start: date, as_of: date) -> None:
     else:
         st.info("No league teams have been added yet. Add teams in League Setup to get started.")
 
-    for warning in dict.fromkeys(warnings):
-        st.warning(warning)
+    render_score_warnings(warnings)
 
     st.divider()
     st.subheader("Admin access")
@@ -571,8 +565,7 @@ elif page == "Rosters":
                         st.success(
                             f"Saved {team['name']}'s active roster and recalculated this week's points."
                         )
-                        if warnings:
-                            st.warning("\n".join(warnings))
+                        render_score_warnings(warnings)
                     except ValueError as exc:
                         st.error(str(exc))
 
@@ -585,8 +578,7 @@ elif page == "Rosters":
                     team_total = sum(player["points"] for player in scores)
                     st.metric(f"{team['name']} weekly points", team_total)
                 log_warnings = refresh_player_logs_for_week(team_roster, week_start)
-                if log_warnings:
-                    st.warning("\n".join(log_warnings))
+                render_score_warnings(log_warnings)
 
                 active_slot_by_player = {
                     player["player_id"]: slot_labels[player["slot"]]

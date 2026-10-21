@@ -248,6 +248,7 @@ def update_scores(
     season = season_for_week(week_start)
     scores = []
     warnings = []
+    _, saved_games = database.get_week_score_snapshot(team_id, week_start)
 
     live_points = {}
     today = date.today()
@@ -255,7 +256,7 @@ def update_scores(
         live_points, live_error = get_live_player_points(list(players_by_slot.values()))
         if live_error:
             warnings.append(
-                f"Live NBA scores unavailable; only completed games will be shown. {live_error}"
+                f"Live NBA scores unavailable; showing the last saved scores. {live_error}"
             )
 
     for slot, player in players_by_slot.items():
@@ -266,25 +267,34 @@ def update_scores(
         if error and HISTORY_WARNING not in warnings:
             warnings.append(HISTORY_WARNING)
 
-        if player["nba_player_id"] is None:
-            points = 0
-        else:
-            points = database.get_player_week_points(
-                player["player_id"], season, week_start
-            )
+        games_by_day = {
+            game["game_date"]: {"game_date": game["game_date"], "points": game["points"], "status": game["status"]}
+            for game in saved_games if game["player_id"] == player["player_id"]
+        }
+        # Keep observations from the live feed ahead of stale historical data.
+        # A completed historical log can finalize a prior day's unfinished game.
+        for game in database.get_player_week_games(player["player_id"], season, week_start):
+            previous = games_by_day.get(game["game_date"])
+            if not previous or previous["status"] == "Historical" or (
+                previous["status"] == "Live" and game["game_date"] < today.isoformat()
+            ):
+                games_by_day[game["game_date"]] = game
         live_game = live_points.get(int(player["nba_player_id"])) if player["nba_player_id"] else None
         if live_game and week_start <= live_game["game_date"] <= week_start + timedelta(days=6):
-            previous_game_points = database.get_player_game_points_on_date(
-                player["player_id"], season, live_game["game_date"]
-            ) or 0
-            points = points - previous_game_points + live_game["points"]
+            games_by_day[live_game["game_date"].isoformat()] = {
+                "game_date": live_game["game_date"].isoformat(),
+                "points": live_game["points"], "status": live_game["status"],
+            }
             status = f"{status} ({live_game['status'].lower()})"
+        games = [games_by_day[day] for day in sorted(games_by_day)]
+        points = sum(game["points"] for game in games)
         scores.append(
             {
                 "player_id": player["player_id"],
                 "slot": slot,
                 "points": points,
                 "status": status,
+                "games": games,
                 "live_date": live_game["game_date"].isoformat() if live_game else None,
                 "live_points": live_game["points"] if live_game else None,
                 "live_status": live_game["status"] if live_game else None,

@@ -1,13 +1,31 @@
 import unittest
 from datetime import date
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from overview_service import OverviewRefresh, refresh_overview_scores
 from score_service import HISTORY_WARNING
 
 
 class OverviewRefreshTests(unittest.TestCase):
+    def test_overview_uses_shared_weekly_worker(self):
+        shared = Mock()
+        shared.poll.return_value = ([], set(), [HISTORY_WARNING], True)
+        worker = OverviewRefresh(shared)
+        week = date(2026, 10, 19)
+        try:
+            with (
+                patch("overview_service.database.get_teams", return_value=[
+                    {"id": 1, "name": "A"}, {"id": 2, "name": "B"}
+                ]),
+                patch("overview_service.database.get_week_active_roster", return_value=[{}]),
+                patch("overview_service.update_scores", side_effect=AssertionError("Separate refresh started")),
+            ):
+                self.assertEqual(worker.poll(week), ([HISTORY_WARNING], True))
+            self.assertEqual(shared.poll.call_count, 2)
+        finally:
+            worker.executor.shutdown(wait=True)
+
     def test_slow_refresh_does_not_block_or_duplicate_requests(self):
         release = Event()
         started = Event()

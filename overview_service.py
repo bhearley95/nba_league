@@ -29,12 +29,22 @@ def refresh_overview_scores(week_start: date) -> list[str]:
 class OverviewRefresh:
     """Share one worker across viewers and throttle retries after completion."""
 
-    def __init__(self):
+    def __init__(self, score_refresh=None):
+        self.score_refresh = score_refresh
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="overview")
         self.lock = Lock()
         self.weeks = {}
 
     def poll(self, week_start: date) -> tuple[list[str], bool]:
+        if self.score_refresh is not None:
+            warnings = []
+            refreshing = False
+            for team in database.get_teams():
+                if database.get_week_active_roster(team["id"], week_start):
+                    _, _, team_warnings, pending = self.score_refresh.poll(team["id"], week_start)
+                    warnings.extend(team_warnings)
+                    refreshing = refreshing or pending
+            return list(dict.fromkeys(warnings)), refreshing
         with self.lock:
             state = self.weeks.setdefault(
                 week_start, {"future": None, "finished": None, "warnings": []}

@@ -14,8 +14,16 @@ DATABASE_PATH = Path(
 )
 
 
+class _Connection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE_PATH, timeout=10)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10, factory=_Connection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
@@ -81,6 +89,16 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'ok',
             recalculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (week_start, fantasy_team_id, player_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_score_games (
+            week_start TEXT NOT NULL,
+            fantasy_team_id INTEGER NOT NULL REFERENCES fantasy_teams(id) ON DELETE CASCADE,
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            game_date TEXT NOT NULL,
+            points INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Final',
+            PRIMARY KEY (week_start, fantasy_team_id, player_id, game_date)
         );
 
         CREATE TABLE IF NOT EXISTS player_log_sync (
@@ -592,6 +610,41 @@ def replace_week_player_scores(
                 for score in scores
             ],
         )
+        connection.execute(
+            "DELETE FROM weekly_score_games WHERE week_start = ? AND fantasy_team_id = ?",
+            (week, team_id),
+        )
+        connection.executemany(
+            """INSERT INTO weekly_score_games
+               (week_start, fantasy_team_id, player_id, game_date, points, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (week, team_id, score["player_id"], game["game_date"], game["points"], game.get("status", "Final"))
+                for score in scores for game in score.get("games", [])
+            ],
+        )
+
+
+def get_week_score_snapshot(team_id: int, week_start: date) -> tuple[list[dict], list[dict]]:
+    """Read totals and their daily breakdown from the same committed refresh."""
+    with connect() as connection:
+        connection.execute("BEGIN")
+        scores = connection.execute(
+            """SELECT s.* FROM weekly_player_scores s
+               JOIN weekly_active_rosters ar ON ar.week_start = s.week_start
+                 AND ar.fantasy_team_id = s.fantasy_team_id AND ar.player_id = s.player_id
+               WHERE s.fantasy_team_id = ? AND s.week_start = ?""",
+            (team_id, week_start.isoformat()),
+        ).fetchall()
+        games = connection.execute(
+            """SELECT g.*, p.full_name FROM weekly_score_games g
+               JOIN players p ON p.player_id = g.player_id
+               JOIN weekly_active_rosters ar ON ar.week_start = g.week_start
+                 AND ar.fantasy_team_id = g.fantasy_team_id AND ar.player_id = g.player_id
+               WHERE g.fantasy_team_id = ? AND g.week_start = ?""",
+            (team_id, week_start.isoformat()),
+        ).fetchall()
+    return [dict(row) for row in scores], [dict(row) for row in games]
 
 
 def get_player_log_sync_time(player_id: int, season: str) -> datetime | None:
@@ -636,6 +689,17 @@ def get_player_week_points(player_id: int, season: str, week_start: date) -> int
             (player_id, season, week_start.isoformat(), week_start.isoformat()),
         ).fetchone()
         return int(row["points"])
+
+
+def get_player_week_games(player_id: int, season: str, week_start: date) -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT game_date, points, 'Historical' AS status FROM player_game_logs
+               WHERE player_id = ? AND season = ?
+                 AND game_date >= ? AND game_date <= date(?, '+6 days')""",
+            (player_id, season, week_start.isoformat(), week_start.isoformat()),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_player_game_points_on_date(

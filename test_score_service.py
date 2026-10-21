@@ -18,8 +18,11 @@ class LiveScoreTests(unittest.TestCase):
                 123: {"game_date": today, "points": 18, "status": "Live"}
             }, None)),
             patch("score_service._refresh_player_log", side_effect=AssertionError("History must not block live scores")) as history,
-            patch("score_service.database.get_player_week_points", return_value=40),
-            patch("score_service.database.get_player_game_points_on_date", return_value=10),
+            patch("score_service.database.get_week_score_snapshot", return_value=([], [])),
+            patch("score_service.database.get_player_week_games", return_value=[
+                {"game_date": (today - timedelta(days=1)).isoformat(), "points": 30, "status": "Historical"},
+                {"game_date": today.isoformat(), "points": 10, "status": "Historical"},
+            ]),
             patch("score_service.database.replace_week_player_scores") as save,
         ):
             scores, warnings = update_scores(1, week, {"G1": player}, refresh_logs=False)
