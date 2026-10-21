@@ -136,14 +136,15 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
     total_row = 7
 
     def mark_game_cells(data):
+        # Pastel backgrounds need an explicit dark foreground in either theme.
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
         for row, player_name in played_cells:
-            styles.loc[row, player_name] = "background-color: #d9f2df; font-weight: bold"
+            styles.loc[row, player_name] = "background-color: #d9f2df; color: #172033; font-weight: bold"
         for row, player_name in scheduled_cells:
-            styles.loc[row, player_name] = "background-color: #dbeafe"
+            styles.loc[row, player_name] = "background-color: #dbeafe; color: #172033"
         for (row, player_name), status in live_cells.items():
             color = "#ffd699" if status == "Live" else "#d9f2df"
-            styles.loc[row, player_name] = f"background-color: {color}; font-weight: bold"
+            styles.loc[row, player_name] = f"background-color: {color}; color: #172033; font-weight: bold"
         styles.loc[total_row, :] = "font-weight: bold; border-top: 2px solid #888"
         return styles
 
@@ -662,7 +663,7 @@ elif page == "Schedule Grid":
 
                 def highlight_current_week(data):
                     styles = pd.DataFrame("", index=data.index, columns=data.columns)
-                    styles[current_week_column] = "background-color: #fff2cc"
+                    styles[current_week_column] = "background-color: #fff2cc; color: #172033"
                     return styles
 
                 display_grid = display_grid.style.apply(highlight_current_week, axis=None)
