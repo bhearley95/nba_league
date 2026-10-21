@@ -101,6 +101,41 @@ def render_score_warnings(warnings) -> None:
             st.warning(warning)
 
 
+@st.cache_resource
+def free_agent_refresh(storage_key: str):
+    from free_agent_service import FreeAgentRefresh
+    return FreeAgentRefresh()
+
+
+@st.fragment(run_every="30s")
+def render_free_agents(season, week_start, period_start, period_end):
+    refresh = st.session_state.pop("free_agent_refresh_requested", False)
+    try:
+        leaders, warning, refreshing, fetched_at = free_agent_refresh(storage_key).poll(
+            season, week_start, period_start, period_end, refresh=refresh
+        )
+        if refreshing:
+            st.caption("Updating NBA scoring stats in the background. Saved rankings are shown immediately; this view checks for updates every 30 seconds.")
+        if warning:
+            st.warning(warning)
+        if leaders:
+            frame = pd.DataFrame(leaders).rename(columns={
+                "full_name": "Player", "position": "Position", "nba_team_name": "NBA Team",
+                "points_per_game": "Points per Game",
+            })[["Player", "Position", "NBA Team", "Points per Game"]]
+            st.dataframe(frame, hide_index=True, width="stretch", column_config={
+                "Points per Game": st.column_config.NumberColumn(format="%.1f", alignment="left"),
+            })
+            if fetched_at:
+                st.caption(f"Stats last updated: {fetched_at:%Y-%m-%d %H:%M} UTC")
+        elif refreshing and fetched_at is None:
+            st.info("Downloading scoring stats for the first time. The top 30 free agents will appear automatically when ready.")
+        elif not warning:
+            st.info("No unrostered players with regular-season appearances were found.")
+    except Exception as exc:
+        st.error(f"Could not load free agents: {exc}")
+
+
 @st.fragment(run_every="30s")
 def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None:
     """Render one team's grid and refresh live boxscores while it is visible."""
@@ -755,7 +790,6 @@ else:
         "NBA scoring leaders who are not on a fantasy roster for the current week, "
         "ranked by points per game."
     )
-    from free_agent_service import get_scoring_leaders
     from score_service import season_for_week
 
     current_week_start = monday_of(date.today())
@@ -781,47 +815,6 @@ else:
         )
         season_end = FANTASY_SEASON_START + timedelta(weeks=FANTASY_SEASON_WEEKS) - timedelta(days=1)
         period_end = min(date.today(), season_end)
-    refresh_leaders = st.button("Refresh scoring leaders", key="refresh_free_agents")
-    try:
-        with st.spinner("Loading NBA scoring leaders…"):
-            leaders, stats_warning = get_scoring_leaders(
-                season,
-                refresh=refresh_leaders,
-                period_start=period_start,
-                period_end=period_end,
-            )
-        if stats_warning:
-            st.warning(stats_warning)
-
-        rostered_player_ids = {
-            player["player_id"]
-            for team in database.get_teams()
-            for player in database.get_team_roster(team["id"], current_week_start)
-        }
-        free_agents = [
-            player for player in leaders
-            if player["player_id"] not in rostered_player_ids
-        ][:30]
-        if free_agents:
-            free_agent_frame = pd.DataFrame(free_agents).rename(
-                columns={
-                    "full_name": "Player",
-                    "position": "Position",
-                    "nba_team_name": "NBA Team",
-                    "points_per_game": "Points per Game",
-                }
-            )[["Player", "Position", "NBA Team", "Points per Game"]]
-            st.dataframe(
-                free_agent_frame,
-                hide_index=True,
-                width="stretch",
-                column_config={
-                    "Points per Game": st.column_config.NumberColumn(
-                        format="%.1f", alignment="left"
-                    ),
-                },
-            )
-        elif not stats_warning:
-            st.info("No unrostered players with regular-season appearances were found.")
-    except Exception as exc:
-        st.error(f"Could not load free agents: {exc}")
+    if st.button("Refresh scoring leaders", key="refresh_free_agents"):
+        st.session_state["free_agent_refresh_requested"] = True
+    render_free_agents(season, current_week_start, period_start, period_end)

@@ -1,15 +1,59 @@
 from datetime import date, datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from time import monotonic
+import requests
 
 from nba_api.stats.endpoints import leaguedashplayerstats
 from nba_api.stats.static import teams
 
 import database
+from schedule_service import get_season_schedule
+from score_service import LIVE_DATA_BASE
 
 
 STATS_CACHE_TTL = timedelta(hours=3)
 
 
-def _fetch_stats(
+class FreeAgentRefresh:
+    """Read cloud rankings immediately; share NBA refreshes between viewers."""
+
+    def __init__(self):
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="free-agents")
+        self.lock = Lock()
+        self.requests = {}
+
+    @staticmethod
+    def _refresh(season, period_start, period_end):
+        stats = _fetch_stats(season, period_start, period_end)
+        if period_start is not None:
+            database.save_player_period_stats(season, period_start, period_end, stats)
+        else:
+            database.save_season_player_stats(season, stats)
+
+    def poll(self, season, week_start, period_start=None, period_end=None, refresh=False):
+        key = (season, period_start, period_end)
+        with self.lock:
+            state = self.requests.setdefault(key, {"future": None, "retry_at": 0, "warning": None})
+            future = state["future"]
+            if future is not None and future.done():
+                try:
+                    future.result()
+                    state["warning"] = None
+                    state["retry_at"] = 0
+                except Exception:
+                    state["warning"] = "NBA scoring stats could not be refreshed. Showing saved rankings; retrying in five minutes."
+                    state["retry_at"] = monotonic() + 300
+                state["future"] = None
+            leaders, fetched_at = database.get_free_agent_rankings(season, week_start, period_start, period_end)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            stale = fetched_at is None or now - fetched_at >= STATS_CACHE_TTL
+            if state["future"] is None and (refresh or (stale and monotonic() >= state["retry_at"])):
+                state["future"] = self.executor.submit(self._refresh, season, period_start, period_end)
+            return leaders, state["warning"], state["future"] is not None, fetched_at
+
+
+def _fetch_stats_from_stats_api(
     season: str, period_start: date | None = None, period_end: date | None = None
 ) -> list[dict]:
     parameters = {
@@ -17,7 +61,7 @@ def _fetch_stats(
         "season_type_all_star": "Regular Season",
         "per_mode_detailed": "PerGame",
         "measure_type_detailed_defense": "Base",
-        "timeout": 30,
+        "timeout": 8,
     }
     if period_start and period_end:
         parameters["date_from_nullable"] = period_start.strftime("%m/%d/%Y")
@@ -48,6 +92,64 @@ def _fetch_stats(
         if previous is None or abbreviation == "TOT" or games_played > previous["games_played"]:
             rows_by_player[nba_player_id] = player_stats
     return list(rows_by_player.values())
+
+
+def _fetch_completed_boxscore(game):
+    response = requests.get(f"{LIVE_DATA_BASE}/boxscore/boxscore_{game['game_id']}.json", timeout=10)
+    response.raise_for_status()
+    box = response.json()["game"]
+    if int(box.get("gameStatus", 0)) != 3:
+        return None
+    players = []
+    for side in ("homeTeam", "awayTeam"):
+        team = box[side]
+        for player in team.get("players", []):
+            if str(player.get("played", "0")) != "1":
+                continue
+            players.append({"nba_player_id": int(player["personId"]),
+                            "points": int(player.get("statistics", {}).get("points", 0) or 0),
+                            "nba_team_name": f"{team['teamCity']} {team['teamName']}"})
+    return {"game_id": game["game_id"], "game_date": game["game_date"], "players": players}
+
+
+def _fetch_stats_from_boxscores(season, period_start=None, period_end=None):
+    start = period_start.isoformat() if period_start else f"{season[:4]}-10-01"
+    end = min(period_end or date.today(), date.today()).isoformat()
+    games = {game["game_id"]: game for game in get_season_schedule(season)
+             if start <= game["game_date"] <= end}
+    saved = {game["game_id"]: game for game in database.get_completed_boxscores(season)
+             if game["game_id"] in games}
+    missing = [game for game_id, game in games.items() if game_id not in saved]
+    completed = []
+    try:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            for game in executor.map(_fetch_completed_boxscore, missing):
+                if game is not None:
+                    completed.append(game)
+    finally:
+        # Retain successful downloads even if another game request fails.
+        if completed:
+            database.save_completed_boxscores(season, completed)
+    saved.update({game["game_id"]: game for game in completed})
+    totals = {}
+    for game in saved.values():
+        for player in game["players"]:
+            row = totals.setdefault(player["nba_player_id"], {
+                "nba_player_id": player["nba_player_id"], "games_played": 0,
+                "points": 0, "nba_team_name": player["nba_team_name"],
+            })
+            row["games_played"] += 1
+            row["points"] += player["points"]
+    return [{"nba_player_id": row["nba_player_id"], "games_played": row["games_played"],
+             "points_per_game": row["points"] / row["games_played"], "nba_team_name": row["nba_team_name"]}
+            for row in totals.values()]
+
+
+def _fetch_stats(season, period_start=None, period_end=None):
+    try:
+        return _fetch_stats_from_stats_api(season, period_start, period_end)
+    except requests.RequestException:
+        return _fetch_stats_from_boxscores(season, period_start, period_end)
 
 
 def get_scoring_leaders(

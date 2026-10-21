@@ -55,6 +55,14 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS nba_completed_boxscores (
+            season TEXT NOT NULL,
+            game_id TEXT NOT NULL,
+            game_date TEXT NOT NULL,
+            players_json TEXT NOT NULL,
+            PRIMARY KEY (season, game_id)
+        );
+
         CREATE TABLE IF NOT EXISTS fantasy_teams (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
@@ -777,6 +785,62 @@ def get_player_stats_sync_time(season: str) -> datetime | None:
             (season,),
         ).fetchone()
         return datetime.fromisoformat(row["fetched_at"]) if row else None
+
+
+def get_free_agent_rankings(season: str, week_start: date,
+                            period_start: date | None = None,
+                            period_end: date | None = None) -> tuple[list[dict], datetime | None]:
+    """Read the top 30 eligible players in one query, including roster carry-forward."""
+    if (period_start is None) != (period_end is None):
+        raise ValueError("Both period start and end dates are required.")
+    period = period_start is not None
+    stats_table = "nba_player_period_stats" if period else "nba_player_season_stats"
+    sync_table = "nba_player_period_stats_sync" if period else "nba_player_stats_sync"
+    filters = "season = ?"
+    parameters = [season]
+    if period:
+        filters += " AND period_start = ? AND period_end = ?"
+        parameters += [period_start.isoformat(), period_end.isoformat()]
+    with connect() as connection:
+        connection.execute("BEGIN")
+        synced = connection.execute(f"SELECT fetched_at FROM {sync_table} WHERE {filters}", parameters).fetchone()
+        rows = connection.execute(
+            f"""WITH latest AS (
+                    SELECT fantasy_team_id, MAX(week_start) AS week_start
+                    FROM weekly_rosters WHERE week_start <= ? GROUP BY fantasy_team_id
+                ), rostered AS (
+                    SELECT r.player_id FROM weekly_rosters r JOIN latest l
+                      ON l.fantasy_team_id = r.fantasy_team_id AND l.week_start = r.week_start
+                    UNION
+                    SELECT d.player_id FROM draft_rosters d
+                    WHERE NOT EXISTS (SELECT 1 FROM latest l WHERE l.fantasy_team_id = d.fantasy_team_id)
+                )
+                SELECT p.player_id, p.nba_player_id, p.full_name, p.position,
+                       s.nba_team_name, s.games_played, s.points_per_game
+                FROM {stats_table} s JOIN players p ON p.nba_player_id = s.nba_player_id
+                WHERE s.{filters.replace(' AND ', ' AND s.')}
+                  AND p.is_active = 1 AND s.games_played > 0
+                  AND p.player_id NOT IN (SELECT player_id FROM rostered)
+                ORDER BY s.points_per_game DESC, p.full_name COLLATE NOCASE LIMIT 30""",
+            [week_start.isoformat(), *parameters],
+        ).fetchall()
+    return [dict(row) for row in rows], datetime.fromisoformat(synced["fetched_at"]) if synced else None
+
+
+def get_completed_boxscores(season: str) -> list[dict]:
+    with connect() as connection:
+        rows = connection.execute("SELECT game_id, game_date, players_json FROM nba_completed_boxscores WHERE season = ?", (season,)).fetchall()
+    return [{"game_id": row["game_id"], "game_date": row["game_date"], "players": json.loads(row["players_json"])} for row in rows]
+
+
+def save_completed_boxscores(season: str, games: list[dict]) -> None:
+    with connect() as connection:
+        connection.executemany(
+            """INSERT INTO nba_completed_boxscores(season, game_id, game_date, players_json)
+               VALUES (?, ?, ?, ?) ON CONFLICT(season, game_id) DO UPDATE SET
+               game_date = excluded.game_date, players_json = excluded.players_json""",
+            [(season, game["game_id"], game["game_date"], json.dumps(game["players"])) for game in games],
+        )
 
 
 def get_season_player_stats(season: str) -> list[sqlite3.Row]:

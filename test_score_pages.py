@@ -38,6 +38,19 @@ class ScorePageTests(unittest.TestCase):
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(len(app.error), 0)
                 self.assertEqual(len(app.dataframe[0].value), 30)
+                free_agents = Mock()
+                free_agents.poll.return_value = ([{
+                    "full_name": "Free Agent", "position": "G", "nba_team_name": "Test",
+                    "points_per_game": 19.5,
+                }], None, False, None)
+                with (
+                    patch("free_agent_service.FreeAgentRefresh", return_value=free_agents),
+                    patch("database.get_team_roster", side_effect=AssertionError("Per-team cloud query")),
+                ):
+                    app.button(key="nav_free_agents").click().run()
+                self.assertEqual(len(app.exception), 0)
+                self.assertEqual(len(app.error), 0)
+                self.assertEqual(app.dataframe[0].value.iloc[0]["Player"], "Free Agent")
         finally:
             st.cache_resource.clear()
             fixture.tearDown()

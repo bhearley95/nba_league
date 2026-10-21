@@ -45,6 +45,28 @@ class CloudScoreConsistencyTests(fixtures.ScoreConsistencyTests):
                 migrate_backup(self.local_path, url)
             self.assert_totals(48)
 
+    def test_free_agent_rankings_filter_rosters_and_limit_after_exclusion(self):
+        with database.connect() as c:
+            c.execute("INSERT INTO fantasy_teams(id, name) VALUES (2, 'Second')")
+            c.executemany("""INSERT INTO players(player_id,nba_player_id,source_key,full_name,position,nba_team_name)
+                VALUES (?,?,?,?,'G','Test')""", [(i+10, i+1000, f'p{i}', f'Player {i:02}') for i in range(40)])
+            c.execute("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,10)")
+            c.execute("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (2,12)")
+            c.execute("INSERT INTO weekly_rosters(week_start,fantasy_team_id,player_id) VALUES ('2026-10-19',1,11)")
+            c.execute("INSERT INTO weekly_rosters(week_start,fantasy_team_id,player_id) VALUES ('2026-10-26',1,13)")
+        stats = [{"nba_player_id": i+1000, "games_played": 2, "points_per_game": 40-i, "nba_team_name": "Test"} for i in range(40)]
+        database.save_season_player_stats('2026-27', stats)
+        leaders, fetched = database.get_free_agent_rankings('2026-27', self.week)
+        self.assertEqual(len(leaders), 30)
+        self.assertIsNotNone(fetched)
+        self.assertEqual(leaders[0]['player_id'], 10)
+        self.assertNotIn(11, {p['player_id'] for p in leaders})
+        self.assertNotIn(12, {p['player_id'] for p in leaders})
+        self.assertIn(13, {p['player_id'] for p in leaders})
+        database.save_player_period_stats('2026-27', self.week, self.week, stats)
+        period, _ = database.get_free_agent_rankings('2026-27', self.week, self.week, self.week)
+        self.assertEqual(period, leaders)
+
 
 class CloudAdapterTests(unittest.TestCase):
     def test_multistatement_schema_and_rows(self):
