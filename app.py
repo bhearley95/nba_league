@@ -135,21 +135,18 @@ def render_free_agents(season, week_start, period_start, period_end):
         st.error(f"Could not load free agents: {exc}")
 
 
-@st.fragment(run_every="30s")
-def render_roster_weekly_points(team_id: int, team_name: str, week_start: date):
-    team_roster = [dict(row) for row in database.get_team_roster(team_id, week_start)]
+@st.cache_resource
+def roster_snapshots(storage_key: str):
+    from roster_service import RosterSnapshots
+    return RosterSnapshots(weekly_score_refresh(storage_key))
+
+
+def render_roster_weekly_points(team_id: int, team_name: str, week_start: date, snapshot):
+    team_roster = snapshot["roster"]
+    active_roster = snapshot["active"]
+    scores = snapshot["scores"]
+    points_by_player = snapshot["points"]
     slot_labels = {"C": "C", "F1": "F", "F2": "F", "G1": "G", "G2": "G"}
-    # Refresh all ten players off-thread; never wait for the NBA API here.
-    _, _, warnings, refreshing = weekly_score_refresh(storage_key).poll(team_id, week_start)
-    render_score_warnings(warnings)
-    if refreshing:
-        st.caption("Showing saved weekly points while player stats update in the background.")
-    active_roster = [dict(row) for row in database.get_week_active_roster(team_id, week_start)]
-    scores, _ = database.get_week_score_snapshot(team_id, week_start)
-    points_by_player = database.get_players_week_totals(
-        [player["player_id"] for player in team_roster], season_for_week(week_start), week_start
-    )
-    points_by_player.update({score["player_id"]: score["points"] for score in scores})
     if active_roster:
         st.metric(f"{team_name} weekly points", sum(score["points"] for score in scores))
     active_slot_by_player = {
@@ -193,6 +190,102 @@ def render_roster_weekly_points(team_id: int, team_name: str, week_start: date):
             )
         },
     )
+
+
+@st.fragment(run_every="5s")
+def render_roster_teams(week_start: date):
+    teams, warnings, refreshing = roster_snapshots(storage_key).poll(week_start)
+    render_score_warnings(warnings)
+    if teams is None:
+        st.info("Loading saved rosters...")
+        return
+    if refreshing:
+        st.caption("Showing last loaded rosters while scores update in the background.")
+    if not teams:
+        st.info("Add league members in League Setup first.")
+    admin_unlocked = st.session_state.get("overview_admin_unlocked", False)
+    if not admin_unlocked:
+        st.caption("Unlock admin access on Overview to edit or submit weekly rosters.")
+
+    slot_labels = {
+        "C": "C",
+        "F1": "F",
+        "F2": "F",
+        "G1": "G",
+        "G2": "G",
+    }
+
+    for team in teams:
+        team_id = team["id"]
+        team_roster = team["roster"]
+        active_roster = team["active"]
+        current_by_slot = {player["slot"]: player for player in active_roster}
+
+        with st.expander(team["name"], expanded=not active_roster):
+            if len(team_roster) != 10:
+                st.warning(
+                    f"{team['name']} needs a complete ten-player roster for this week in League Setup before an active lineup can be submitted."
+                )
+                continue
+
+            player_by_id = {player["player_id"]: player for player in team_roster}
+            options = [None, *player_by_id.keys()]
+
+            def player_label(player_id):
+                if player_id is None:
+                    return "Select a player"
+                return player_by_id[player_id]["full_name"]
+
+            with st.form(f"active_roster_form_{team_id}_{week_start.isoformat()}"):
+                columns = st.columns(5)
+                players_by_slot = {}
+                for index, slot in enumerate(database.ACTIVE_ROSTER_SLOTS):
+                    saved_id = current_by_slot.get(slot, {}).get("player_id")
+                    default_index = options.index(saved_id) if saved_id in options else 0
+                    with columns[index]:
+                        players_by_slot[slot] = st.selectbox(
+                            slot_labels[slot],
+                            options,
+                            index=default_index,
+                            format_func=player_label,
+                            key=f"active_{team_id}_{week_start.isoformat()}_{slot}",
+                            disabled=not admin_unlocked,
+                        )
+                submit_roster = st.form_submit_button(
+                    "Submit roster and recalculate points",
+                    type="primary",
+                    disabled=not admin_unlocked,
+                )
+
+            if submit_roster:
+                if any(value is None for value in players_by_slot.values()):
+                    st.error("Select a player in all five active roster slots.")
+                elif len(set(players_by_slot.values())) != 5:
+                    st.error("Select five different players for the active roster.")
+                else:
+                    try:
+                        database.save_week_active_roster(
+                            team_id, week_start, players_by_slot
+                        )
+                        selected_players = {
+                            slot: player_by_id[player_id]
+                            for slot, player_id in players_by_slot.items()
+                        }
+                        with st.spinner(
+                            f"Refreshing player scores and recalculating {team['name']}'s total…"
+                        ):
+                            _, warnings = update_scores(
+                                team_id, week_start, selected_players
+                            )
+                        roster_snapshots(storage_key).invalidate(week_start)
+                        st.success(
+                            f"Saved {team['name']}'s active roster and recalculated this week's points."
+                        )
+                        render_score_warnings(warnings)
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+            render_roster_weekly_points(team_id, team["name"], week_start, team)
 
 
 @st.fragment(run_every="30s")
@@ -615,94 +708,7 @@ elif page == "Rosters":
     week_end = week_start + timedelta(days=6)
     st.caption(f"Selected scoring week: {week_start:%b} {week_start.day} – {week_end:%b} {week_end.day}, {week_end.year}")
 
-    teams = [dict(team) for team in database.get_teams()]
-    if not teams:
-        st.info("Add league members in League Setup first.")
-    admin_unlocked = st.session_state.get("overview_admin_unlocked", False)
-    if not admin_unlocked:
-        st.caption("Unlock admin access on Overview to edit or submit weekly rosters.")
-
-    slot_labels = {
-        "C": "C",
-        "F1": "F",
-        "F2": "F",
-        "G1": "G",
-        "G2": "G",
-    }
-
-    for team in teams:
-        team_id = team["id"]
-        team_roster = [dict(player) for player in database.get_team_roster(team_id, week_start)]
-        active_roster = [
-            dict(player)
-            for player in database.get_week_active_roster(team_id, week_start)
-        ]
-        current_by_slot = {player["slot"]: player for player in active_roster}
-
-        with st.expander(team["name"], expanded=not active_roster):
-            if len(team_roster) != 10:
-                st.warning(
-                    f"{team['name']} needs a complete ten-player roster for this week in League Setup before an active lineup can be submitted."
-                )
-                continue
-
-            player_by_id = {player["player_id"]: player for player in team_roster}
-            options = [None, *player_by_id.keys()]
-
-            def player_label(player_id):
-                if player_id is None:
-                    return "Select a player"
-                return player_by_id[player_id]["full_name"]
-
-            with st.form(f"active_roster_form_{team_id}_{week_start.isoformat()}"):
-                columns = st.columns(5)
-                players_by_slot = {}
-                for index, slot in enumerate(database.ACTIVE_ROSTER_SLOTS):
-                    saved_id = current_by_slot.get(slot, {}).get("player_id")
-                    default_index = options.index(saved_id) if saved_id in options else 0
-                    with columns[index]:
-                        players_by_slot[slot] = st.selectbox(
-                            slot_labels[slot],
-                            options,
-                            index=default_index,
-                            format_func=player_label,
-                            key=f"active_{team_id}_{week_start.isoformat()}_{slot}",
-                            disabled=not admin_unlocked,
-                        )
-                submit_roster = st.form_submit_button(
-                    "Submit roster and recalculate points",
-                    type="primary",
-                    disabled=not admin_unlocked,
-                )
-
-            if submit_roster:
-                if any(value is None for value in players_by_slot.values()):
-                    st.error("Select a player in all five active roster slots.")
-                elif len(set(players_by_slot.values())) != 5:
-                    st.error("Select five different players for the active roster.")
-                else:
-                    try:
-                        database.save_week_active_roster(
-                            team_id, week_start, players_by_slot
-                        )
-                        selected_players = {
-                            slot: player_by_id[player_id]
-                            for slot, player_id in players_by_slot.items()
-                        }
-                        with st.spinner(
-                            f"Refreshing player scores and recalculating {team['name']}'s total…"
-                        ):
-                            _, warnings = update_scores(
-                                team_id, week_start, selected_players
-                            )
-                        st.success(
-                            f"Saved {team['name']}'s active roster and recalculated this week's points."
-                        )
-                        render_score_warnings(warnings)
-                    except ValueError as exc:
-                        st.error(str(exc))
-
-            render_roster_weekly_points(team_id, team["name"], week_start)
+    render_roster_teams(week_start)
 
 elif page == "Schedule Grid":
     from score_service import get_season_schedule, season_for_week

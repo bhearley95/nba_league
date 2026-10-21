@@ -8,6 +8,7 @@ from score_service import HISTORY_WARNING
 from schedule_service import get_week_schedule
 import test_score_consistency as fixtures
 import database
+from roster_service import load_roster_snapshot
 
 
 class ScorePageTests(unittest.TestCase):
@@ -27,6 +28,7 @@ class ScorePageTests(unittest.TestCase):
             database.save_player_season_logs(6, '2026-27', [{"game_date":"2026-10-20", "points":17, "matchup":"TEST"}])
             with (
                 patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("roster_service.RosterSnapshots.poll", side_effect=lambda week: (load_roster_snapshot(week), [], False)),
                 patch("database.sync_player_catalog", return_value=10),
                 patch("overview_service.OverviewRefresh.get_snapshot", return_value=([], [], False, None)),
                 patch("score_service.refresh_player_logs_for_week", side_effect=AssertionError("Blocking NBA call")),
@@ -57,6 +59,7 @@ class ScorePageTests(unittest.TestCase):
         try:
             with (
                 patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("roster_service.RosterSnapshots.poll", side_effect=lambda week: (load_roster_snapshot(week), [], False)),
                 patch("overview_service.OverviewRefresh.get_snapshot", side_effect=lambda week, as_of: (database.get_leaderboard(week, as_of), [], False, None)),
                 patch("database.sync_player_catalog", return_value=1),
                 patch("database.initialize_database", wraps=database.initialize_database) as initialize,
@@ -84,6 +87,7 @@ class ScorePageTests(unittest.TestCase):
             shared.poll.return_value = ([], get_week_schedule(fixture.week), [HISTORY_WARNING], False)
             with (
                 patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("roster_service.RosterSnapshots.poll", side_effect=lambda week: (load_roster_snapshot(week), [], False)),
                 patch("overview_service.OverviewRefresh.get_snapshot", side_effect=lambda week, as_of: (database.get_leaderboard(week, as_of), [], False, None)),
                 patch("database.sync_player_catalog", return_value=1),
             ):
