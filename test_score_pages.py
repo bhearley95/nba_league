@@ -11,6 +11,43 @@ import database
 
 
 class ScorePageTests(unittest.TestCase):
+    def test_roster_table_shows_all_ten_players_and_bench_without_waiting_for_stats(self):
+        fixture = fixtures.ScoreConsistencyTests()
+        fixture.setUp()
+        st.cache_resource.clear()
+        shared = Mock()
+        shared.poll.return_value = ([], set(), [], True)
+        try:
+            fixture.refresh(18)
+            with database.connect() as c:
+                c.executemany("""INSERT INTO players
+                    (player_id,nba_player_id,source_key,full_name,position,nba_team_name)
+                    VALUES (?,?,?,?,'G','Test')""", [(i, 1000+i, f'p{i}', f'Player {i}') for i in range(2,11)])
+                c.executemany("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,?)", [(i,) for i in range(1,11)])
+            database.save_player_season_logs(6, '2026-27', [{"game_date":"2026-10-20", "points":17, "matchup":"TEST"}])
+            with (
+                patch("weekly_score_service.WeeklyScoreRefresh", return_value=shared),
+                patch("database.sync_player_catalog", return_value=10),
+                patch("overview_service.OverviewRefresh.get_snapshot", return_value=([], [], False, None)),
+                patch("score_service.refresh_player_logs_for_week", side_effect=AssertionError("Blocking NBA call")),
+            ):
+                app = AppTest.from_file("app.py", default_timeout=15).run()
+                app.button(key="nav_rosters").click().run()
+                self.assertEqual(len(app.exception), 0)
+                table = app.dataframe[0].value
+                self.assertEqual(len(table), 10)
+                self.assertEqual((table['Position'] == 'BN').sum(), 9)
+                self.assertEqual(int(table.loc[table['Player']=='Test Player','Points'].iloc[0]), 48)
+                self.assertEqual(int(table.loc[table['Player']=='Player 6','Points'].iloc[0]), 17)
+                with database.connect() as c:
+                    c.execute("DELETE FROM weekly_active_rosters")
+                app.run()
+                self.assertEqual(len(app.exception), 0)
+                self.assertEqual((app.dataframe[0].value['Position']=='BN').sum(), 10)
+        finally:
+            st.cache_resource.clear()
+            fixture.tearDown()
+
     def test_schema_version_change_runs_initialization_with_existing_cache(self):
         fixture = fixtures.ScoreConsistencyTests()
         fixture.setUp()

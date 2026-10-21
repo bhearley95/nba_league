@@ -16,7 +16,7 @@ class WeeklyScoreRefreshTests(unittest.TestCase):
         )
         self.schedule_patch.start()
         self.history_patch = patch("weekly_score_service.refresh_player_logs_for_week", return_value=[])
-        self.roster_patch = patch("weekly_score_service.database.get_week_active_roster", return_value=[])
+        self.roster_patch = patch("weekly_score_service.database.get_team_roster", return_value=[])
         self.history_patch.start()
         self.roster_patch.start()
 

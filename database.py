@@ -741,6 +741,21 @@ def get_player_week_games(player_id: int, season: str, week_start: date) -> list
     return [dict(row) for row in rows]
 
 
+def get_players_week_totals(player_ids: list[int], season: str, week_start: date) -> dict[int, int]:
+    """Read saved weekly totals for a whole roster in one database request."""
+    if not player_ids:
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    with connect() as connection:
+        rows = connection.execute(
+            f"""SELECT player_id, SUM(points) AS points FROM player_game_logs
+                WHERE season = ? AND game_date >= ? AND game_date <= date(?, '+6 days')
+                  AND player_id IN ({placeholders}) GROUP BY player_id""",
+            [season, week_start.isoformat(), week_start.isoformat(), *player_ids],
+        ).fetchall()
+    return {row["player_id"]: int(row["points"]) for row in rows}
+
+
 def get_player_game_points_on_date(
     player_id: int, season: str, game_date: date
 ) -> int | None:

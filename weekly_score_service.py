@@ -52,7 +52,7 @@ class WeeklyScoreRefresh:
             _, history_warnings, _ = self._poll(
                 ("game logs", team_id, week_start),
                 lambda: (None, refresh_player_logs_for_week(
-                    [dict(row) for row in database.get_week_active_roster(team_id, week_start)],
+                    [dict(row) for row in database.get_team_roster(team_id, week_start)],
                     week_start,
                 )), None, 300, self.history_executor,
             )
