@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 import database
+from overview_service import OverviewRefresh
 from score_service import (
     get_week_schedule,
     normalize_nba_team_name,
@@ -164,9 +165,14 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         st.warning(f"Could not load the NBA schedule; showing scores without schedule highlights. {schedule_error}")
 
 
+@st.cache_resource
+def overview_refresh() -> OverviewRefresh:
+    return OverviewRefresh()
+
+
 @st.fragment(run_every="30s")
 def render_overview(week_start: date, as_of: date) -> None:
-    """Refresh each submitted roster before drawing the live leaderboard."""
+    """Show saved scores immediately while refreshing NBA data in the background."""
     st.title("League Overview")
     week_end = week_start + timedelta(days=6)
     st.caption(
@@ -175,15 +181,9 @@ def render_overview(week_start: date, as_of: date) -> None:
     )
     st.caption("Scores refresh every 30 seconds while this page is open.")
 
-    warnings = []
-    teams = [dict(team) for team in database.get_teams()]
-    for team in teams:
-        active_roster = database.get_week_active_roster(team["id"], week_start)
-        if active_roster:
-            _, team_warnings = update_scores(team["id"], week_start)
-            warnings.extend(
-                f"{team['name']}: {warning}" for warning in team_warnings
-            )
+    warnings, refreshing = overview_refresh().poll(week_start)
+    if refreshing:
+        st.caption("Updating NBA scores in the background. Showing saved scores until the next refresh.")
 
     leaderboard = database.get_leaderboard(week_start, as_of)
     if leaderboard:
