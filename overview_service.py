@@ -6,7 +6,7 @@ from threading import Lock
 from time import monotonic
 
 import database
-from score_service import update_scores
+from score_service import HISTORY_WARNING, update_scores
 
 
 def refresh_overview_scores(week_start: date) -> list[str]:
@@ -15,7 +15,12 @@ def refresh_overview_scores(week_start: date) -> list[str]:
         if database.get_week_active_roster(team["id"], week_start):
             try:
                 _, team_warnings = update_scores(team["id"], week_start)
-                warnings.extend(f"{team['name']}: {warning}" for warning in team_warnings)
+                for warning in team_warnings:
+                    if warning == HISTORY_WARNING:
+                        if warning not in warnings:
+                            warnings.append(warning)
+                    else:
+                        warnings.append(f"{team['name']}: {warning}")
             except Exception as exc:
                 warnings.append(f"{team['name']}: Score refresh failed. {exc}")
     return warnings

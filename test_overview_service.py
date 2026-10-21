@@ -4,6 +4,7 @@ from threading import Event
 from unittest.mock import patch
 
 from overview_service import OverviewRefresh, refresh_overview_scores
+from score_service import HISTORY_WARNING
 
 
 class OverviewRefreshTests(unittest.TestCase):
@@ -47,6 +48,16 @@ class OverviewRefreshTests(unittest.TestCase):
             warnings = refresh_overview_scores(date(2026, 10, 19))
         self.assertEqual(update.call_count, 2)
         self.assertEqual(warnings, ["A: Score refresh failed. offline"])
+
+    def test_history_outage_shown_once_across_teams(self):
+        with (
+            patch("overview_service.database.get_teams", return_value=[
+                {"id": 1, "name": "A"}, {"id": 2, "name": "B"}
+            ]),
+            patch("overview_service.database.get_week_active_roster", return_value=[{}]),
+            patch("overview_service.update_scores", return_value=([], [HISTORY_WARNING])),
+        ):
+            self.assertEqual(refresh_overview_scores(date(2026, 10, 19)), [HISTORY_WARNING])
 
 
 if __name__ == "__main__":

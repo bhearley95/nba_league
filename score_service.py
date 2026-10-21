@@ -1,6 +1,9 @@
 """Fetch and recalculate weekly points from cached NBA player game logs."""
 
 from datetime import date, datetime, timedelta
+import logging
+from threading import Lock
+from time import monotonic
 
 import requests
 from nba_api.stats.endpoints import playergamelog
@@ -11,6 +14,14 @@ from nba_api.stats.static import teams as nba_teams
 
 
 LOG_CACHE_TTL = timedelta(hours=1)
+HISTORY_RETRY_SECONDS = 300
+HISTORY_WARNING = (
+    "Historical NBA game logs are temporarily unavailable. Showing saved game logs; "
+    "historical totals may be out of date. Live scores use a separate feed."
+)
+_history_lock = Lock()
+_history_retry_at = 0.0
+_logger = logging.getLogger(__name__)
 LIVE_DATA_BASE = "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA/liveData"
 
 
@@ -156,6 +167,14 @@ def get_live_player_points(
 
 
 def _refresh_player_log(player: dict, season: str) -> tuple[str | None, str]:
+    # Serialize history requests across viewers and stop retrying every player
+    # when the shared stats endpoint is unreachable. Live requests use no lock.
+    with _history_lock:
+        return _refresh_player_log_locked(player, season)
+
+
+def _refresh_player_log_locked(player: dict, season: str) -> tuple[str | None, str]:
+    global _history_retry_at
     nba_player_id = player["nba_player_id"]
     if nba_player_id is None:
         return None, "NBA player ID unavailable"
@@ -164,6 +183,8 @@ def _refresh_player_log(player: dict, season: str) -> tuple[str | None, str]:
     fetched_at = database.get_player_log_sync_time(player_id, season)
     if fetched_at and datetime.now() - fetched_at < LOG_CACHE_TTL:
         return None, "Cached"
+    if monotonic() < _history_retry_at:
+        return HISTORY_WARNING, "Using cached data; retry delayed" if fetched_at else "NBA data unavailable; retry delayed"
 
     try:
         game_log = playergamelog.PlayerGameLog(
@@ -184,10 +205,15 @@ def _refresh_player_log(player: dict, season: str) -> tuple[str | None, str]:
             )
         database.save_player_season_logs(player_id, season, games)
         return None, "Updated"
+    except requests.RequestException as exc:
+        _history_retry_at = monotonic() + HISTORY_RETRY_SECONDS
+        _logger.warning("NBA historical game-log request failed; retrying in %ss: %s", HISTORY_RETRY_SECONDS, exc)
+        return HISTORY_WARNING, "Using cached data; refresh failed" if fetched_at else "NBA data unavailable"
     except Exception as exc:
+        _logger.warning("NBA historical game logs could not be processed: %s", exc)
         if fetched_at:
-            return str(exc), "Using cached data; refresh failed"
-        return str(exc), "NBA data unavailable"
+            return HISTORY_WARNING, "Using cached data; refresh failed"
+        return HISTORY_WARNING, "NBA data unavailable"
 
 
 def refresh_player_logs_for_week(
@@ -198,8 +224,8 @@ def refresh_player_logs_for_week(
     warnings = []
     for player in players:
         error, status = _refresh_player_log(player, season)
-        if error:
-            warnings.append(f"{player['full_name']}: {error} ({status.lower()}).")
+        if error and HISTORY_WARNING not in warnings:
+            warnings.append(HISTORY_WARNING)
     return warnings
 
 
@@ -237,8 +263,8 @@ def update_scores(
             error, status = _refresh_player_log(player, season)
         else:
             error, status = None, "Saved game logs"
-        if error:
-            warnings.append(f"{player['full_name']}: {error} ({status.lower()}).")
+        if error and HISTORY_WARNING not in warnings:
+            warnings.append(HISTORY_WARNING)
 
         if player["nba_player_id"] is None:
             points = 0
