@@ -67,7 +67,8 @@ except Exception:
 @st.cache_resource
 def sync_catalog(source_path: str, modified_at: float, storage_key: str) -> int:
     # The modification time is part of the cache key, so edits to the source file
-    # are imported the next time Streamlit reruns.
+    # are imported the next time Streamlit reruns. Matching version 2 also
+    # invalidates older in-process cache entries after the jersey collision fix.
     del modified_at
     return database.sync_player_catalog(database.read_player_positions_file(source_path))
 

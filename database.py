@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
@@ -376,7 +377,13 @@ def read_player_positions_file(path: str | Path) -> list[dict]:
 def sync_player_catalog(players: Iterable[dict]) -> int:
     """Batch catalog updates and skip unchanged imports across deployments."""
     rows = list(players)
-    digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+    # Include the matching version so existing cloud catalogs are repaired when
+    # the import rules change even if the source file itself is unchanged.
+    digest = hashlib.sha256(json.dumps({"matching_version": 2, "players": rows}, sort_keys=True).encode()).hexdigest()
+    jersey_counts = Counter(
+        (player["nba_team_name"], player["jersey_number"])
+        for player in rows if player["jersey_number"]
+    )
     with connect() as connection:
         saved = connection.execute(
             "SELECT value FROM app_metadata WHERE key = 'player_catalog_digest'"
@@ -387,14 +394,21 @@ def sync_player_catalog(players: Iterable[dict]) -> int:
         existing_rows = [dict(row) for row in connection.execute("SELECT * FROM players").fetchall()]
         next_id = max((row["player_id"] for row in existing_rows), default=0) + 1
         updates = []
+        matched_ids = set()
         for player in rows:
             existing = None
             if player["nba_player_id"] is not None:
                 existing = next((row for row in existing_rows if row["nba_player_id"] == player["nba_player_id"]), None)
             if existing is None:
                 existing = next((row for row in existing_rows if row["source_key"] == player["source_key"]), None)
-            if existing is None and player["jersey_number"]:
-                candidates = [row for row in existing_rows if row["nba_team_name"] == player["nba_team_name"] and row["jersey_number"] == player["jersey_number"]]
+            if existing is None and player["jersey_number"] and jersey_counts[(player["nba_team_name"], player["jersey_number"])] == 1:
+                candidates = [
+                    row for row in existing_rows
+                    if row["nba_team_name"] == player["nba_team_name"]
+                    and row["jersey_number"] == player["jersey_number"]
+                    and row["player_id"] not in matched_ids
+                    and (row["nba_player_id"] is None or row["nba_player_id"] == player["nba_player_id"])
+                ]
                 if len(candidates) == 1:
                     existing = candidates[0]
             if existing is None:
@@ -402,6 +416,7 @@ def sync_player_catalog(players: Iterable[dict]) -> int:
                 next_id += 1
                 existing_rows.append(existing)
             existing.update(player)
+            matched_ids.add(existing["player_id"])
             updates.append((existing["player_id"], player["nba_player_id"], player["source_key"],
                             player["full_name"], player["position"], player["nba_team_name"], player["jersey_number"]))
         connection.execute("UPDATE players SET is_active = 0")
