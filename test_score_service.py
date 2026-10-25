@@ -1,14 +1,47 @@
 import unittest
 from datetime import date, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import requests
 
-from score_service import HISTORY_WARNING, _refresh_player_log, refresh_player_logs_for_week, update_scores
+from score_service import get_live_player_points, refresh_roster_game_logs, HISTORY_WARNING, _refresh_player_log, refresh_player_logs_for_week, update_scores
 
 
 class LiveScoreTests(unittest.TestCase):
+    def test_absent_player_follows_team_live_and_final_status(self):
+        players = [{"nba_player_id": 123, "nba_team_name": "Cleveland Cavaliers"},
+                   {"nba_player_id": 456, "nba_team_name": "Boston Celtics"}]
+        for status, expected in [(2, "Live"), (3, "Final")]:
+            with self.subTest(status=expected):
+                scoreboard = Mock()
+                scoreboard.json.return_value = {"scoreboard": {
+                    "gameDate": "2026-10-25", "games": [{"gameId": "test", "gameStatus": status,
+                    "homeTeam": {"teamId": 1610612739}, "awayTeam": {"teamId": 1610612738}}]}}
+                box = Mock()
+                box.json.return_value = {"game": {"homeTeam": {"players": []},
+                    "awayTeam": {"players": [{"personId": 456, "statistics": {"points": 18}}]}}}
+                with patch("score_service.requests.Session") as session:
+                    session.return_value.get.side_effect = [scoreboard, box]
+                    result, error = get_live_player_points(players)
+                self.assertIsNone(error)
+                self.assertEqual(result[123], {"game_date": date(2026, 10, 25), "points": 0, "status": expected})
+                self.assertEqual(result[456]["points"], 18)
+
+    def test_completed_game_gives_absent_roster_player_zero(self):
+        player = {"player_id": 1, "nba_player_id": 123, "nba_team_name": "Cleveland Cavaliers"}
+        with (
+            patch("free_agent_service._fetch_stats_from_boxscores"),
+            patch("score_service.get_season_schedule", return_value=[{
+                "game_id": "test", "game_date": "2026-10-25", "nba_team_name": "Cleveland Cavaliers"}]),
+            patch("score_service.database.get_completed_boxscores", return_value=[{
+                "game_id": "test", "game_date": "2026-10-25", "players": []}]),
+            patch("score_service.database.save_roster_game_points") as save,
+        ):
+            refresh_roster_game_logs([player], date(2026, 10, 19))
+        save.assert_called_once_with("2026-27", [{"player_id": 1, "game_date": "2026-10-25",
+                                                  "points": 0, "status": "Final"}])
+
     def test_live_only_update_skips_history_and_replaces_existing_game_points(self):
         today = date.today()
         week = today - timedelta(days=today.weekday())

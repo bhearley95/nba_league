@@ -351,7 +351,7 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
         for row, player_name in scheduled_cells:
             styles.loc[row, player_name] = "background-color: #dbeafe; color: #172033"
         for (row, player_name), status in live_cells.items():
-            color = "#ffd699" if status == "Live" else "#d9f2df"
+            color = "#fff3b0" if status == "Live" else "#d9f2df"
             styles.loc[row, player_name] = f"background-color: {color}; color: #172033; font-weight: bold"
         styles.loc[total_row, :] = "font-weight: bold; border-top: 2px solid #888"
         return styles
@@ -360,7 +360,7 @@ def render_weekly_scores(team_id: int, team_name: str, week_start: date) -> None
     st.metric(f"{team_name} weekly total", weekly_total)
     st.caption(
         "Live games refresh every 30 seconds while this page is open. "
-        "Orange cells are in progress, green cells are finished, and blue cells are scheduled."
+        "Yellow cells are in progress, green cells are finished, and blue cells are scheduled."
     )
     st.dataframe(
         grid.style.apply(mark_game_cells, axis=None),

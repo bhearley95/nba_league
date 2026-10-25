@@ -160,7 +160,7 @@ Cleveland Cavaliers
 14	Curtis Jones	G	6-3	195	10/4/2001 (25)	1	
 5	Sam Merrill	G	6-4	205	5/15/1996 (30)	6	
 12	Riley Minix	F	6-7	230	9/22/2000 (26)	2	
-45	Donovn Mitchell	G	6-2	215	9/7/1996 (30)	9	
+45	Donovan Mitchell	G	6-2	215	9/7/1996 (30)	9	
 4	Evan Mobley	F/C	6-11	215	6/18/2001 (25)	5	
 9	Craig Porter Jr	G	6-1	180	2/26/2000 (26)	3	
 24	Tyrese Proctor	G	6-4	185	4/1/2004 (22)	1	

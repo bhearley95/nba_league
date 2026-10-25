@@ -93,6 +93,20 @@ def get_live_player_points(
             boxscore_response.raise_for_status()
             boxscore = boxscore_response.json().get("game", {})
             game_status = "Live" if int(game.get("gameStatus", 0)) == 2 else "Final"
+            # Inactive players may be absent from the boxscore entirely.
+            # Their team's actual game status still applies to their zero.
+            game_team_ids = {
+                int(game.get(side, {}).get("teamId", 0))
+                for side in ("homeTeam", "awayTeam")
+            }
+            for roster_player in players:
+                team_id = team_id_by_name.get(normalize_nba_team_name(
+                    roster_player.get("nba_team_name") or ""
+                ))
+                if team_id in game_team_ids and roster_player.get("nba_player_id") is not None:
+                    results[int(roster_player["nba_player_id"])] = {
+                        "game_date": game_date, "points": 0, "status": game_status,
+                    }
             for side in ("homeTeam", "awayTeam"):
                 for player in boxscore.get(side, {}).get("players", []):
                     nba_player_id = int(player.get("personId", 0))
@@ -179,15 +193,23 @@ def refresh_roster_game_logs(players: list[dict], week_start: date) -> list[str]
     from free_agent_service import _fetch_stats_from_boxscores
     season = season_for_week(week_start)
     _fetch_stats_from_boxscores(season, week_start, week_start + timedelta(days=6))
-    player_ids = {p["nba_player_id"]: p["player_id"] for p in players if p["nba_player_id"] is not None}
     games = []
+    teams_by_game = {}
+    for scheduled in get_season_schedule(season):
+        teams_by_game.setdefault(scheduled["game_id"], set()).add(
+            normalize_nba_team_name(scheduled["nba_team_name"])
+        )
     for game in database.get_completed_boxscores(season):
         if not week_start.isoformat() <= game["game_date"] <= (week_start + timedelta(days=6)).isoformat():
             continue
-        for player in game["players"]:
-            if player["nba_player_id"] in player_ids:
-                games.append({"player_id": player_ids[player["nba_player_id"]], "game_date": game["game_date"],
-                              "points": player["points"], "status": "Final"})
+        points_by_id = {player["nba_player_id"]: player["points"] for player in game["players"]}
+        for player in players:
+            nba_id = player["nba_player_id"]
+            if nba_id in points_by_id or normalize_nba_team_name(
+                player.get("nba_team_name") or ""
+            ) in teams_by_game.get(game["game_id"], set()):
+                games.append({"player_id": player["player_id"], "game_date": game["game_date"],
+                              "points": points_by_id.get(nba_id, 0), "status": "Final"})
     database.save_roster_game_points(season, games)
     return []
 
