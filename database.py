@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 from collections import Counter
+from league_time import league_today
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
@@ -1111,7 +1112,7 @@ def save_team_roster(team_id: int, week_start: date, player_ids: list[int]) -> N
 
 def get_leaderboard(week_start: date, as_of: date | None = None) -> list[dict]:
     """Return season totals, current-week points, and wins from completed weeks."""
-    as_of = as_of or date.today()
+    as_of = as_of or league_today()
     with connect() as connection:
         rows = connection.execute(
             """SELECT t.id, t.name, t.manager_name,

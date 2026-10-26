@@ -1,5 +1,6 @@
 """Fetch and recalculate weekly points from cached NBA player game logs."""
 
+from league_time import league_today
 from datetime import date, datetime, timedelta
 import logging
 from threading import Lock
@@ -236,7 +237,7 @@ def update_scores(
     _, saved_games = database.get_week_score_snapshot(team_id, week_start)
 
     live_points = {}
-    today = date.today()
+    today = league_today()
     if week_start <= today <= week_start + timedelta(days=6):
         roster = [dict(row) for row in database.get_team_roster(team_id, week_start)]
         roster_by_id = {p["player_id"]: p for p in [*roster, *players_by_slot.values()]}

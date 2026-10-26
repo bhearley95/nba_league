@@ -1,3 +1,4 @@
+from league_time import league_today
 from datetime import date, timedelta
 import hmac
 import hashlib
@@ -545,7 +546,7 @@ if page == "League Setup":
             for index, week in enumerate(scoring_weeks)
         ]
         current_week_index = min(
-            max((date.today() - FANTASY_SEASON_START).days // 7, 0),
+            max((league_today() - FANTASY_SEASON_START).days // 7, 0),
             FANTASY_SEASON_WEEKS - 1,
         )
         team_column, week_column = st.columns(2)
@@ -676,8 +677,8 @@ if page == "League Setup":
                     st.caption("No roster entered for this week yet.")
 
 elif page == "Overview":
-    week_start = monday_of(date.today())
-    render_overview(week_start, date.today())
+    week_start = monday_of(league_today())
+    render_overview(week_start, league_today())
 
 elif page == "Rosters":
     st.title("Weekly Rosters")
@@ -695,7 +696,7 @@ elif page == "Rosters":
         for week_index, week_start in enumerate(scoring_weeks)
     ]
     current_week_index = min(
-        max((date.today() - FANTASY_SEASON_START).days // 7, 0),
+        max((league_today() - FANTASY_SEASON_START).days // 7, 0),
         FANTASY_SEASON_WEEKS - 1,
     )
     selected_week = st.selectbox(
@@ -740,7 +741,7 @@ elif page == "Schedule Grid":
                     schedule_grid.loc[game["nba_team_name"], week_column] += 1
             schedule_grid.index.name = "NBA Team"
             st.caption(f"{len(schedule)} team-game dates loaded from the saved schedule.")
-            current_week_index = (monday_of(date.today()) - FANTASY_SEASON_START).days // 7
+            current_week_index = (monday_of(league_today()) - FANTASY_SEASON_START).days // 7
             display_grid = schedule_grid.reset_index()
             if 0 <= current_week_index < FANTASY_SEASON_WEEKS:
                 current_week_column = week_columns[current_week_index]
@@ -769,6 +770,7 @@ elif page == "Schedule Grid":
 
 elif page == "Weekly Scores":
     st.title("Weekly Scores")
+    st.caption("Scoring weeks switch on Monday at midnight Hawaii time (UTC?10).")
     scoring_weeks = [
         FANTASY_SEASON_START + timedelta(weeks=week_index)
         for week_index in range(FANTASY_SEASON_WEEKS)
@@ -778,7 +780,7 @@ elif page == "Weekly Scores":
         for index, start in enumerate(scoring_weeks)
     ]
     current_week_index = min(
-        max((date.today() - FANTASY_SEASON_START).days // 7, 0),
+        max((league_today() - FANTASY_SEASON_START).days // 7, 0),
         FANTASY_SEASON_WEEKS - 1,
     )
     week_col, team_col = st.columns(2)
@@ -807,7 +809,7 @@ else:
     )
     from score_service import season_for_week
 
-    current_week_start = monday_of(date.today())
+    current_week_start = monday_of(league_today())
     season = season_for_week(current_week_start)
     elapsed_weeks = min(
         max((current_week_start - FANTASY_SEASON_START).days // 7 + 1, 1),
@@ -829,7 +831,7 @@ else:
             current_week_start - timedelta(weeks=selected_week_count - 1),
         )
         season_end = FANTASY_SEASON_START + timedelta(weeks=FANTASY_SEASON_WEEKS) - timedelta(days=1)
-        period_end = min(date.today(), season_end)
+        period_end = min(league_today(), season_end)
     if st.button("Refresh scoring leaders", key="refresh_free_agents"):
         st.session_state["free_agent_refresh_requested"] = True
     render_free_agents(season, current_week_start, period_start, period_end)
