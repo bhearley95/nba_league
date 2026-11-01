@@ -50,6 +50,30 @@ class CatalogImportTests(unittest.TestCase):
         self.assertEqual(database.get_draft_roster(1)[0]["full_name"], "Isaiah Stevens")
         self.assertEqual(database.sync_player_catalog(self.players), 2)
 
+    def test_acuff_missing_from_static_catalog_keeps_roster_id(self):
+        with database.connect() as connection:
+            connection.execute("INSERT INTO fantasy_teams(id,name) VALUES (1,'Test')")
+            connection.execute("""INSERT INTO players
+                (player_id,source_key,full_name,position,nba_team_name,jersey_number)
+                VALUES (447,'darius acuff jr','Darius Acuff Jr','G','Sacramento Kings','5')""")
+            connection.execute("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,447)")
+        with patch("nba_api.stats.static.players.get_players", return_value=[]):
+            catalog = database.read_player_positions_file("player_positions.txt")
+        acuff = next(p for p in catalog if p['full_name'] == 'Darius Acuff Jr.')
+        self.assertEqual(acuff['nba_player_id'], 1643411)
+        database.sync_player_catalog([acuff])
+        roster = database.get_draft_roster(1)
+        self.assertEqual(roster[0]['player_id'], 447)
+        self.assertEqual(roster[0]['nba_player_id'], 1643411)
+
+    def test_name_matching_ignores_suffix_period(self):
+        source = Path(self.directory.name) / 'players.txt'
+        source.write_text('Sacramento Kings\n5\tDarius Acuff Jr\tG\n')
+        with patch("nba_api.stats.static.players.get_players", return_value=[
+            {"full_name": "Darius Acuff Jr.", "id": 1643411}
+        ]):
+            self.assertEqual(database.read_player_positions_file(source)[0]['nba_player_id'], 1643411)
+
     def test_same_jersey_cannot_replace_a_different_known_nba_id(self):
         database.sync_player_catalog(self.players[1:])
         with database.connect() as connection:

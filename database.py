@@ -333,10 +333,16 @@ def read_player_positions_file(path: str | Path) -> list[dict]:
         ascii_name = ascii_name.encode("ascii", "ignore").decode("ascii")
         return re.sub(r"\s+", " ", ascii_name).strip().casefold()
 
+    def match_name(value: str) -> str:
+        return normalize(value).replace(".", "")
+
     nba_ids_by_name = {
-        normalize(player["full_name"]): player["id"]
+        match_name(player["full_name"]): player["id"]
         for player in nba_players.get_players()
     }
+    # Verified in NBA live boxscore 0022600150; the installed static catalog
+    # does not yet include this rookie.
+    nba_ids_by_name.setdefault("darius acuff jr", 1643411)
     catalog = []
     seen_names: set[str] = set()
     team_name = ""
@@ -381,7 +387,7 @@ def read_player_positions_file(path: str | Path) -> list[dict]:
             seen_names.add(source_key)
             catalog.append(
                 {
-                    "nba_player_id": nba_ids_by_name.get(normalized_name),
+                    "nba_player_id": nba_ids_by_name.get(match_name(name)),
                     "source_key": source_key,
                     "full_name": name,
                     "position": position,

@@ -45,7 +45,7 @@ class ScoreConsistencyTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path_patch = patch.object(database, "DATABASE_PATH", Path(self.directory.name) / "test.db")
         self.path_patch.start()
-        self.date_patch = patch("score_service.date", GameDate)
+        self.date_patch = patch("score_service.league_today", return_value=GameDate(2026, 10, 21))
         self.date_patch.start()
         self.week = date(2026, 10, 19)
         database.initialize_database()
