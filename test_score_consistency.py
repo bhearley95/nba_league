@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import database
-from score_service import update_scores, refresh_roster_game_logs
+from score_service import update_scores, refresh_roster_game_logs, refetch_week_scores
 
 
 class GameDate(date):
@@ -40,6 +40,28 @@ class ScoreConsistencyTests(unittest.TestCase):
             refresh_roster_game_logs([dict(row) for row in database.get_team_roster(1,self.week)], self.week)
         self.assertEqual(database.get_players_week_totals([1,2], '2026-27', self.week)[2], 22)
         self.assert_totals(48)
+
+    def test_refetch_replaces_final_zero_only_for_selected_week(self):
+        with database.connect() as c:
+            c.execute("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,1)")
+        database.save_roster_game_points('2026-27', [
+            {"player_id": 1, "game_date": "2026-10-21", "points": 0, "status": "Final"},
+            {"player_id": 1, "game_date": "2026-10-28", "points": 9, "status": "Final"},
+        ])
+        update_scores(1, self.week, refresh_logs=False)
+        self.assert_totals(30)
+        database.save_completed_boxscores('2026-27', [{
+            "game_id": "test", "game_date": "2026-10-21",
+            "players": [{"nba_player_id": 123, "points": 18, "nba_team_name": "Boston Celtics"}]
+        }])
+        with (
+            patch('free_agent_service._fetch_stats_from_boxscores') as fetch,
+            patch('score_service.get_live_player_points', return_value=({}, None)),
+        ):
+            self.assertEqual(refetch_week_scores(self.week), [])
+        fetch.assert_called_once_with('2026-27', self.week, date(2026,10,25), force=True)
+        self.assert_totals(48)
+        self.assertEqual(database.get_player_week_games(1,'2026-27',date(2026,10,26))[0]['points'],9)
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

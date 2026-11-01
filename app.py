@@ -789,6 +789,22 @@ elif page == "Weekly Scores":
             "Scoring week", week_labels, index=current_week_index, key="scores_week"
         )
     week_start = scoring_weeks[week_labels.index(selected_week)]
+    if st.session_state.get("overview_admin_unlocked", False):
+        st.caption("Refetch all scores downloads game data again and recalculates every team's scores for the selected week.")
+        if st.button("Refetch all scores", key="refetch_week_scores"):
+            try:
+                with st.spinner("Refetching game data and recalculating the selected week..."):
+                    messages = weekly_score_refresh(storage_key).refetch_week(week_start)
+                    roster_snapshots(storage_key).invalidate(week_start)
+                if messages:
+                    for message in messages:
+                        st.warning(message)
+                else:
+                    st.success(f"Scores recalculated for all teams for {selected_week}.")
+            except Exception as exc:
+                st.error(f"Could not complete the score refetch. You can retry. {exc}")
+    else:
+        st.caption("Unlock admin controls on Overview to refetch scores for this week.")
     teams = [dict(team) for team in database.get_teams()]
     if not teams:
         st.info("Add league members in League Setup first.")

@@ -12,6 +12,11 @@ from roster_service import load_roster_snapshot
 
 
 class ScorePageTests(unittest.TestCase):
+    def setUp(self):
+        clock = patch("league_time.league_today", return_value=fixtures.date(2026, 10, 21))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_roster_table_shows_all_ten_players_and_bench_without_waiting_for_stats(self):
         fixture = fixtures.ScoreConsistencyTests()
         fixture.setUp()
@@ -97,10 +102,17 @@ class ScorePageTests(unittest.TestCase):
                 self.assertEqual(len(app.warning), 0)
                 app.button(key="nav_weekly_scores").click().run()
                 self.assertEqual(len(app.exception), 0)
+                self.assertFalse(any(button.label == "Refetch all scores" for button in app.button))
                 self.assertEqual(app.metric[0].value, "48")
                 self.assertEqual(str(app.dataframe[0].value.iloc[-1]["Test Player"]), "48")
                 self.assertIn("#dbeafe", str(app.dataframe[0].proto))
                 self.assertEqual(len(app.warning), 0)
+                shared.refetch_week.return_value = []
+                app.session_state["overview_admin_unlocked"] = True
+                app.run()
+                app.button(key="refetch_week_scores").click().run()
+                shared.refetch_week.assert_called_once_with(fixture.week)
+                self.assertTrue(any("Scores recalculated" in message.value for message in app.success))
                 self.assertTrue(any("Historical game logs are delayed" in caption.value for caption in app.caption))
                 with patch("database.get_nba_season_schedule", side_effect=AssertionError("Schedule queried SQL")):
                     app.button(key="nav_schedule_grid").click().run()

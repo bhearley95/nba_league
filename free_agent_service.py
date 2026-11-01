@@ -129,7 +129,7 @@ def _fetch_completed_boxscore(game):
     return {"game_id": game["game_id"], "game_date": game["game_date"], "players": players}
 
 
-def _fetch_stats_from_boxscores(season, period_start=None, period_end=None):
+def _fetch_stats_from_boxscores(season, period_start=None, period_end=None, *, force=False):
     today = nba_today()
     start = period_start.isoformat() if period_start else f"{season[:4]}-10-01"
     end = min(period_end or today, today).isoformat()
@@ -137,7 +137,7 @@ def _fetch_stats_from_boxscores(season, period_start=None, period_end=None):
              if start <= game["game_date"] <= end}
     saved = {game["game_id"]: game for game in database.get_completed_boxscores(season)
              if game["game_id"] in games}
-    missing = [game for game_id, game in games.items() if game_id not in saved]
+    missing = [game for game_id, game in games.items() if force or game_id not in saved]
     if any(game["game_date"] == today.isoformat() for game in missing):
         response = requests.get(f"{LIVE_DATA_BASE}/scoreboard/todaysScoreboard_00.json", timeout=10)
         response.raise_for_status()

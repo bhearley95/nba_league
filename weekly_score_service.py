@@ -6,7 +6,7 @@ from threading import Lock
 from time import monotonic
 
 import database
-from score_service import get_week_schedule, refresh_roster_game_logs as refresh_player_logs_for_week, update_scores
+from score_service import refetch_week_scores, get_week_schedule, refresh_roster_game_logs as refresh_player_logs_for_week, update_scores
 
 
 class WeeklyScoreRefresh:
@@ -57,3 +57,20 @@ class WeeklyScoreRefresh:
                 )), None, 300, self.history_executor,
             )
         return scores, schedule, score_warnings + schedule_warnings + history_warnings, scoring
+
+    def refetch_week(self, week_start: date):
+        # Prevent a pending background calculation from overwriting the repair.
+        with self.lock:
+            keys = [key for key in self.requests if key[2] == week_start]
+            for key in keys:
+                future = self.requests[key]["future"]
+                if future is not None:
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+            try:
+                return refetch_week_scores(week_start)
+            finally:
+                for key in keys:
+                    self.requests.pop(key, None)

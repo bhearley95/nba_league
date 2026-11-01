@@ -31,6 +31,22 @@ class FreeAgentServiceTests(unittest.TestCase):
             save.assert_called_once_with("2026-27", [completed])
             self.assertEqual(result[0]["points_per_game"], 24)
 
+    def test_force_downloads_cached_games_only_within_selected_week(self):
+        week = date(2026, 10, 19)
+        selected = {"game_id": "selected", "game_date": "2026-10-20", "nba_team_name": "Test"}
+        other = {"game_id": "other", "game_date": "2026-10-28", "nba_team_name": "Test"}
+        cached = {**selected, "players": []}
+        with (
+            patch('free_agent_service.nba_today', return_value=date(2026,11,1)),
+            patch('free_agent_service.get_season_schedule', return_value=[selected, other]),
+            patch('free_agent_service.database.get_completed_boxscores', return_value=[cached]),
+            patch('free_agent_service.database.save_completed_boxscores') as save,
+            patch('free_agent_service._fetch_completed_boxscore', return_value=cached) as fetch,
+        ):
+            _fetch_stats_from_boxscores('2026-27', week, date(2026,10,25), force=True)
+        fetch.assert_called_once_with(selected)
+        save.assert_called_once_with('2026-27', [cached])
+
     def test_failure_details_identify_storage_and_hide_credentials(self):
         with patch("free_agent_service.database.CLOUD_URL", "sqlitecloud://host/db?apikey=secret"):
             self.assertNotIn("secret", _error_detail(RuntimeError("Failed sqlitecloud://host/db?apikey=secret")))

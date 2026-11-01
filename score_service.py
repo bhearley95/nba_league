@@ -189,11 +189,14 @@ def refresh_player_logs_for_week(
     return warnings
 
 
-def refresh_roster_game_logs(players: list[dict], week_start: date) -> list[str]:
+def refresh_roster_game_logs(players: list[dict], week_start: date, *, force: bool = False) -> list[str]:
     """Populate all rostered players from the working completed-boxscore feed."""
     from free_agent_service import _fetch_stats_from_boxscores
     season = season_for_week(week_start)
-    _fetch_stats_from_boxscores(season, week_start, week_start + timedelta(days=6))
+    if force:
+        _fetch_stats_from_boxscores(season, week_start, week_start + timedelta(days=6), force=True)
+    else:
+        _fetch_stats_from_boxscores(season, week_start, week_start + timedelta(days=6))
     games = []
     teams_by_game = {}
     for scheduled in get_season_schedule(season):
@@ -270,7 +273,7 @@ def update_scores(
         # A completed historical log can finalize a prior day's unfinished game.
         for game in database.get_player_week_games(player["player_id"], season, week_start):
             previous = games_by_day.get(game["game_date"])
-            if not previous or previous["status"] == "Historical" or (
+            if not previous or game["status"] == "Final" or previous["status"] == "Historical" or (
                 previous["status"] == "Live" and game["game_date"] < today.isoformat()
             ):
                 games_by_day[game["game_date"]] = game
@@ -307,3 +310,21 @@ def recalculate_team_week(
 ) -> tuple[list[dict], list[str]]:
     """Backward-compatible wrapper for roster submission score updates."""
     return update_scores(team_id, week_start, players_by_slot)
+
+
+def refetch_week_scores(week_start: date) -> list[str]:
+    """Redownload this week's completed boxscores, then rebuild every lineup total."""
+    teams = list(database.get_teams())
+    players = {}
+    for team in teams:
+        for row in database.get_team_roster(team["id"], week_start):
+            player = dict(row)
+            players[player["player_id"]] = player
+    # Fetch once for the entire league. On failure keep the existing totals.
+    refresh_roster_game_logs(list(players.values()), week_start, force=True)
+    warnings = []
+    for team in teams:
+        if database.get_week_active_roster(team["id"], week_start):
+            _, messages = update_scores(team["id"], week_start, refresh_logs=False)
+            warnings.extend(f"{team['name']}: {message}" for message in messages)
+    return list(dict.fromkeys(warnings))
