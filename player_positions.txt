@@ -640,7 +640,7 @@ Houston Rockets
 9	Oscar Tshiebwe	F	6-8	255	11/27/1999 (26)	3	
 5	Fred VanVleet	G	6-0	197	2/25/1994 (32)	9	
 
-Memphis Grizzles
+Memphis Grizzlies
 
 27	Cameron Boozer	F/C	6-8	253	7/18/2007 (19)	R	
 4	Wal Clayton Jr	G	6-4	195	3/6/2003 (23)	1	

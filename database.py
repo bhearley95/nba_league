@@ -343,6 +343,8 @@ def read_player_positions_file(path: str | Path) -> list[dict]:
     # Verified in NBA live boxscore 0022600150; the installed static catalog
     # does not yet include this rookie.
     nba_ids_by_name.setdefault("darius acuff jr", 1643411)
+    # Verified in NBA live boxscore 0022600029; also absent from the static catalog.
+    nba_ids_by_name.setdefault("cameron boozer", 1643409)
     catalog = []
     seen_names: set[str] = set()
     team_name = ""

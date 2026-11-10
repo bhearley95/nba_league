@@ -74,6 +74,32 @@ class CatalogImportTests(unittest.TestCase):
         ]):
             self.assertEqual(database.read_player_positions_file(source)[0]['nba_player_id'], 1643411)
 
+    def test_memphis_catalog_repairs_team_and_boozer_id_without_changing_roster(self):
+        with database.connect() as connection:
+            connection.execute("INSERT INTO fantasy_teams(id,name) VALUES (1,'Test')")
+            connection.executemany("""INSERT INTO players
+                (player_id,nba_player_id,source_key,full_name,position,nba_team_name,jersey_number)
+                VALUES (?,?,?,?,?,'Memphis Grizzles',?)""", [
+                (502,None,'cameron boozer','Cameron Boozer','F/C','27'),
+                (511,1629660,'ty jerome','Ty Jerome','G/F','2'),
+            ])
+            connection.executemany("INSERT INTO draft_rosters(fantasy_team_id,player_id) VALUES (1,?)",
+                                   [(502,), (511,)])
+        with patch('nba_api.stats.static.players.get_players', return_value=[
+            {"full_name": "Ty Jerome", "id": 1629660}
+        ]):
+            catalog = database.read_player_positions_file('player_positions.txt')
+        database.sync_player_catalog(catalog)
+        roster = {p['full_name']: p for p in database.get_draft_roster(1)}
+        self.assertEqual(roster['Cameron Boozer']['nba_player_id'],1643409)
+        self.assertEqual(roster['Cameron Boozer']['player_id'],502)
+        self.assertEqual(roster['Ty Jerome']['player_id'],511)
+        for player in roster.values():
+            self.assertEqual(player['nba_team_name'],'Memphis Grizzlies')
+        from schedule_service import get_week_schedule
+        from datetime import date
+        self.assertIn((date(2026,11,6),'Memphis Grizzlies'),get_week_schedule(date(2026,11,2)))
+
     def test_same_jersey_cannot_replace_a_different_known_nba_id(self):
         database.sync_player_catalog(self.players[1:])
         with database.connect() as connection:
